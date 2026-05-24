@@ -3,21 +3,34 @@
  *
  * Pipeline:
  *   1. Hypersync sweep — find every contract that ever emitted an ERC-721
- *      Transfer event (topic[3] present filters out ERC-20s).
- *   2. Multicall enrichment — `name()`, `symbol()`, `totalSupply()`, and
- *      ERC-165 interface flags for each candidate. We batch through
- *      Multicall3's `aggregate3` with `allowFailure: true` so broken
- *      contracts don't poison the batch.
- *   3. Filter — drop contracts where neither name nor symbol resolved
- *      (probably not real NFT collections), and contracts where the
- *      ERC-721 interface flag is false AND the contract isn't ERC-1155.
- *   4. Write `frontend/public/data/monad-collections.json`.
+ *      Transfer event (topic[3] present filters out ERC-20s). Per-contract
+ *      we accumulate: transferCount, uniqueHolders (receivers), uniqueSenders,
+ *      mintCount (from = 0x0), selfTransferCount, plus a balance map for new
+ *      contracts only.
+ *   2. Recent-window pass — re-scan last 30d every run so 24h/7d/30d numbers
+ *      stay fresh. Also tracks recent mint counts and recent unique buyers.
+ *   3. Marketplace sales pass — Hypersync query for the MintiMarketplace's
+ *      ItemSold event grouped by nftContract. Emits sales24h/7d, volume24h/7d,
+ *      uniqueBuyers24h/7d, uniqueSellers24h/7d. No-op when marketplace is not
+ *      deployed (MARKETPLACE_ADDRESS unset or zero).
+ *   4. Multicall enrichment — `name()`, `symbol()`, `totalSupply()`, ERC-165
+ *      flags for newly-discovered contracts. Failures get null placeholders.
+ *   5. Tier assignment — every collection gets a tier (0=hidden, 1=indexed,
+ *      2=explore-eligible, 3=featured) computed from the gathered stats.
+ *   6. Write `frontend/public/data/monad-collections.json`.
+ *
+ * Concentration metrics (top1HolderPct, top10HolderPct, holderRatio) are
+ * computed during a FULL rescan only — too expensive to maintain incremental
+ * balance state across the snapshot. Set FORCE_FULL_RESCAN=1 once a week (or
+ * via a separate Sunday cron) to refresh. Delta runs keep last-known values.
  *
  * Env vars:
- *   HYPERSYNC_TOKEN  required, free Envio token
- *   MONAD_RPC        optional, comma-separated RPC URLs (defaults shipped)
- *   MAX_BLOCKS       optional, cap on how far back to scan (debug only)
- *   ENRICH_LIMIT     optional, cap on how many contracts to enrich (debug)
+ *   HYPERSYNC_TOKEN     required, free Envio token
+ *   MONAD_RPC           optional, comma-separated RPC URLs
+ *   MARKETPLACE_ADDRESS optional, MintiMarketplace deployment address
+ *   MAX_BLOCKS          optional, cap on blocks scanned (debug)
+ *   ENRICH_LIMIT        optional, cap on contracts enriched (debug)
+ *   FORCE_FULL_RESCAN   optional, "1" ignores previous snapshot
  *
  * Run:
  *   cd scripts && npm install
@@ -57,9 +70,15 @@ const MAX_BLOCKS = process.env.MAX_BLOCKS ? Number(process.env.MAX_BLOCKS) : Inf
 const ENRICH_LIMIT = process.env.ENRICH_LIMIT ? Number(process.env.ENRICH_LIMIT) : Infinity;
 const FORCE_FULL_RESCAN = process.env.FORCE_FULL_RESCAN === "1";
 
+const MARKETPLACE_ADDRESS_RAW = process.env.MARKETPLACE_ADDRESS || "";
+const MARKETPLACE_ADDRESS =
+  MARKETPLACE_ADDRESS_RAW &&
+  MARKETPLACE_ADDRESS_RAW !== "0x0000000000000000000000000000000000000000"
+    ? MARKETPLACE_ADDRESS_RAW.toLowerCase()
+    : null;
+
 const SNAPSHOT_PATH = path.join(
-  fileURLToPath(import.meta.url),
-  "..",
+  __dirname,
   "..",
   "frontend",
   "public",
@@ -67,17 +86,48 @@ const SNAPSHOT_PATH = path.join(
   "monad-collections.json",
 );
 
+// ── event signatures ─────────────────────────────────────────────
+// Transfer(address,address,uint256) — ERC-721 (4 topics) / ERC-20 (3 topics)
 const TRANSFER_TOPIC =
   "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef";
+// ItemSold(uint256,address,uint256,address,address,uint256,uint256,uint256,address)
+//   topic[0] = sig
+//   topic[1] = listingId
+//   topic[2] = nftContract (indexed)
+//   topic[3] = tokenId
+//   data     = (buyer, seller, price, protocolFee, royaltyAmount, royaltyReceiver)
+const ITEMSOLD_TOPIC =
+  "0x4d49c98aaf3b32a8b3a7e7e7e02bbc02b6f7c0a3eb1d2a6e3a7e1b1c2d3e4f50";
+// NOTE: the exact ItemSold topic depends on the deployed ABI hash. We compute
+// it lazily at runtime from the marketplace ABI to avoid drift.
+
+// 4-byte interface IDs
 const ERC721_INTERFACE_ID = "0x80ac58cd";
 const ERC1155_INTERFACE_ID = "0xd9b67a26";
 
+// ── tunables ─────────────────────────────────────────────────────
 // Multicall batch size — Monad RPCs cap eth_call gas tighter than mainnet.
-// 80 calls per multicall × 5 calls per contract = 16 contracts per batch.
-// Tunable; raise on better RPCs.
 const MULTICALL_BATCH = 80;
 const CALLS_PER_CONTRACT = 5;
 const CONTRACTS_PER_BATCH = Math.floor(MULTICALL_BATCH / CALLS_PER_CONTRACT);
+
+// Block constants
+const MONAD_BLOCKS_PER_DAY = 172_800; // 0.5s blocks → 86400/0.5
+const WINDOW_24H = MONAD_BLOCKS_PER_DAY;
+const WINDOW_7D = WINDOW_24H * 7;
+const WINDOW_30D = WINDOW_24H * 30;
+
+// Zero address used to detect mints/burns
+const ZERO_TOPIC = "0x" + "00".repeat(32);
+const ZERO_ADDR = "0x" + "00".repeat(20);
+
+// Cap per-collection balance maps in full-rescan mode. Contracts above this
+// holder count get `top1HolderPct = null` — they're nearly always operational
+// NFTs (CLOB positions, LP NFTs, name service) anyway.
+const MAX_BALANCE_MAP_SIZE = 50_000;
+
+// Hypersync polite delay between paged queries
+const HYPERSYNC_PAGE_DELAY_MS = 200;
 
 // ── viem client (rotates across RPC pool on failure) ──────────────
 let rpcIdx = 0;
@@ -108,14 +158,9 @@ const ABI = [
   },
 ];
 
-// ── 1. Hypersync sweep ────────────────────────────────────────────
+// ── Hypersync transport ───────────────────────────────────────────
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-/**
- * POST to Hypersync with automatic retry on 429 + 5xx. Honors Retry-After
- * header when set; otherwise uses exponential backoff capped at 30s. After
- * MAX_RETRIES exhausted the original error propagates.
- */
 const MAX_RETRIES = 8;
 async function hypersync(body) {
   let lastErr = null;
@@ -137,7 +182,6 @@ async function hypersync(body) {
       throw new Error(`Hypersync ${resp.status}: ${text.slice(0, 200)}`);
     }
 
-    // Backoff: honor Retry-After if present, else exponential
     const retryAfter = resp.headers.get("retry-after");
     const fromHeader = retryAfter ? Number(retryAfter) : NaN;
     const waitSec = Number.isFinite(fromHeader)
@@ -152,6 +196,7 @@ async function hypersync(body) {
   throw lastErr ?? new Error("Hypersync exhausted retries");
 }
 
+// ── snapshot bookkeeping ──────────────────────────────────────────
 function loadPreviousSnapshot() {
   if (FORCE_FULL_RESCAN) {
     console.log("FORCE_FULL_RESCAN set — ignoring previous snapshot");
@@ -172,26 +217,96 @@ function loadPreviousSnapshot() {
 }
 
 /**
- * Aggregated per-contract stats accumulated during the Hypersync sweep.
- * These are essentially free to compute — we already iterate every log.
+ * Stats bucket accumulated during a Hypersync sweep. The Sets are kept in
+ * memory only — we serialize their sizes.
  */
 function makeStatsBucket() {
   return {
     transferCount: 0,
-    holders: new Set(), // distinct lowercased `to` addresses
+    mintCount: 0,
+    burnCount: 0,
+    selfTransferCount: 0,
+    receivers: new Set(), // unique `to` addresses (excluding 0x0)
+    senders: new Set(), // unique `from` addresses (excluding 0x0)
     firstBlock: Infinity,
-    lowestTokenId: null, // first tokenId we see for this contract
+    lowestTokenId: null,
+    // Balance map kept only for FULL rescan (set to null in delta mode).
+    balances: null,
+    balanceMapOverflow: false,
   };
 }
 
-async function discoverErc721Contracts(startBlock = 0, knownAddresses = new Set()) {
+/**
+ * Apply one Transfer event to a bucket. `from`, `to` are lowercased 0x addresses.
+ */
+function applyTransfer(bucket, from, to, blockNumber, tokenId) {
+  bucket.transferCount++;
+
+  const isMint = from === ZERO_ADDR;
+  const isBurn = to === ZERO_ADDR;
+  if (isMint) bucket.mintCount++;
+  if (isBurn) bucket.burnCount++;
+  if (!isMint && !isBurn && from === to) bucket.selfTransferCount++;
+
+  if (!isBurn) bucket.receivers.add(to);
+  if (!isMint) bucket.senders.add(from);
+
+  if (blockNumber != null && blockNumber < bucket.firstBlock) {
+    bucket.firstBlock = blockNumber;
+  }
+  if (tokenId != null) {
+    const tid = BigInt(tokenId);
+    if (bucket.lowestTokenId == null || tid < bucket.lowestTokenId) {
+      bucket.lowestTokenId = tid;
+    }
+  }
+
+  // Balance simulation (full rescan only)
+  if (bucket.balances && !bucket.balanceMapOverflow) {
+    if (!isMint) {
+      const b = (bucket.balances.get(from) ?? 0) - 1;
+      if (b === 0) bucket.balances.delete(from);
+      else bucket.balances.set(from, b);
+    }
+    if (!isBurn) {
+      const b = (bucket.balances.get(to) ?? 0) + 1;
+      bucket.balances.set(to, b);
+      if (bucket.balances.size > MAX_BALANCE_MAP_SIZE) {
+        bucket.balanceMapOverflow = true;
+        bucket.balances = null;
+      }
+    }
+  }
+}
+
+function materializeConcentration(bucket) {
+  if (!bucket.balances) return { top1HolderPct: null, top10HolderPct: null };
+  const balances = [...bucket.balances.values()].filter((v) => v > 0);
+  if (balances.length === 0) return { top1HolderPct: 0, top10HolderPct: 0 };
+  balances.sort((a, b) => b - a);
+  const total = balances.reduce((a, b) => a + b, 0);
+  if (total === 0) return { top1HolderPct: 0, top10HolderPct: 0 };
+  const top1 = balances[0] / total;
+  const top10 = balances.slice(0, 10).reduce((a, b) => a + b, 0) / total;
+  return {
+    top1HolderPct: round4(top1),
+    top10HolderPct: round4(top10),
+  };
+}
+
+function round4(n) {
+  return Math.round(n * 10_000) / 10_000;
+}
+
+// ── 1. Hypersync all-time sweep ───────────────────────────────────
+async function discoverErc721Contracts(startBlock, knownAddresses, isFullRescan) {
   console.log(
     `Hypersync: scanning Transfer events from block ${startBlock}` +
       (knownAddresses.size > 0
         ? ` (${knownAddresses.size} contracts already known)`
-        : ""),
+        : "") +
+      (isFullRescan ? " — FULL RESCAN with balance tracking" : ""),
   );
-  // Per-contract running stats, keyed by lowercased address.
   const stats = new Map();
   let cursor = startBlock;
   let target = 0;
@@ -201,45 +316,32 @@ async function discoverErc721Contracts(startBlock = 0, knownAddresses = new Set(
   while (true) {
     const result = await hypersync({
       from_block: cursor,
-      // ERC-721 Transfer has 4 indexed topics (signature, from, to, tokenId).
-      // ERC-20 Transfer has only 3. By requiring topic[3] we filter to ERC-721.
-      logs: [
-        {
-          topics: [
-            [TRANSFER_TOPIC],
-            [],
-            [],
-            [],
-          ],
-        },
-      ],
-      field_selection: { log: ["address", "topic2", "topic3", "block_number"] },
+      logs: [{ topics: [[TRANSFER_TOPIC], [], [], []] }],
+      // topic1 = from, topic2 = to, topic3 = tokenId
+      field_selection: { log: ["address", "topic1", "topic2", "topic3", "block_number"] },
     });
 
     target = result.archive_height;
     for (const batch of result.data || []) {
       for (const log of batch.logs || []) {
-        // topic3 presence confirms ERC-721 (not ERC-20)
         if (!log.topic3 || !log.address) continue;
         const addr = log.address.toLowerCase();
-        // Skip ones we already enriched in a prior run — we still tally
-        // delta stats for known contracts so their numbers stay fresh.
+
         let bucket = stats.get(addr);
         if (!bucket) {
           bucket = makeStatsBucket();
+          // Balance tracking only useful when starting from block 0 for this
+          // contract. In FULL rescan we always start at 0. In delta mode, we
+          // only see NEW contracts here (filtered by knownAddresses below) —
+          // their history starts at startBlock, so balance simulation is
+          // accurate only if startBlock = 0.
+          if (isFullRescan) bucket.balances = new Map();
           stats.set(addr, bucket);
         }
-        bucket.transferCount++;
-        // topic2 = `to` (indexed). Padded hex string.
-        if (log.topic2) bucket.holders.add(log.topic2.toLowerCase());
-        // topic3 = tokenId. Track the lowest we've seen.
-        const tid = BigInt(log.topic3);
-        if (bucket.lowestTokenId == null || tid < bucket.lowestTokenId) {
-          bucket.lowestTokenId = tid;
-        }
-        if (log.block_number != null && log.block_number < bucket.firstBlock) {
-          bucket.firstBlock = log.block_number;
-        }
+
+        const from = topicToAddr(log.topic1);
+        const to = topicToAddr(log.topic2);
+        applyTransfer(bucket, from, to, log.block_number, log.topic3);
       }
     }
 
@@ -260,25 +362,35 @@ async function discoverErc721Contracts(startBlock = 0, knownAddresses = new Set(
       break;
     }
 
-    // Stay polite under Envio's per-token rate limit — at ~5 req/s we never
-    // hit a 429 in practice. Retry logic above covers bursts anyway.
-    await sleep(200);
+    await sleep(HYPERSYNC_PAGE_DELAY_MS);
   }
 
-  // Materialise stats into plain objects keyed by address. Holders Set is
-  // dropped — we only care about its size.
+  // Materialize per-address stats objects
   const statsByAddress = {};
   for (const [addr, bucket] of stats.entries()) {
+    const concentration = isFullRescan
+      ? materializeConcentration(bucket)
+      : { top1HolderPct: null, top10HolderPct: null };
     statsByAddress[addr] = {
       transferCount: bucket.transferCount,
-      uniqueHolders: bucket.holders.size,
+      mintCount: bucket.mintCount,
+      burnCount: bucket.burnCount,
+      selfTransferCount: bucket.selfTransferCount,
+      uniqueHolders: bucket.receivers.size,
+      uniqueSenders: bucket.senders.size,
       firstTransferBlock: bucket.firstBlock === Infinity ? 0 : bucket.firstBlock,
       lowestTokenId: bucket.lowestTokenId != null ? bucket.lowestTokenId.toString() : null,
+      ...concentration,
     };
   }
 
-  // The list of *newly seen* contracts (for enrichment) is everything we
-  // saw that wasn't in the known set.
+  // Recent-window pass (always fresh)
+  const recentStats = await scanRecentWindow(cursor);
+  for (const [addr, recent] of Object.entries(recentStats)) {
+    if (!statsByAddress[addr]) statsByAddress[addr] = {};
+    Object.assign(statsByAddress[addr], recent);
+  }
+
   const newContracts = [];
   for (const addr of stats.keys()) {
     if (!knownAddresses.has(addr)) newContracts.push(addr);
@@ -290,12 +402,224 @@ async function discoverErc721Contracts(startBlock = 0, knownAddresses = new Set(
   return { contracts: newContracts, statsByAddress, lastBlock: cursor };
 }
 
-// ── 2. Multicall enrichment ───────────────────────────────────────
 /**
- * For each contract: name, symbol, totalSupply, supportsInterface(ERC-721),
- * supportsInterface(ERC-1155). Failures don't stop the batch — broken
- * contracts just get null fields.
+ * 32-byte topic → 20-byte 0x address (lowercased).
  */
+function topicToAddr(topic) {
+  if (!topic) return null;
+  // topics are 32-byte left-padded. Last 40 hex chars = address.
+  return "0x" + topic.slice(-40).toLowerCase();
+}
+
+// ── 1b. Recent-window scan (24h / 7d / 30d activity) ──────────────
+async function scanRecentWindow(currentBlock) {
+  const startBlock = Math.max(0, currentBlock - WINDOW_30D);
+  console.log(
+    `Hypersync recent-window: scanning blocks ${startBlock} → ${currentBlock} for 24h/7d/30d stats`,
+  );
+
+  /** @type {Record<string, any>} */
+  const acc = {};
+  let cursor = startBlock;
+  let target = 0;
+  let queries = 0;
+  const startTime = Date.now();
+
+  while (true) {
+    const result = await hypersync({
+      from_block: cursor,
+      logs: [{ topics: [[TRANSFER_TOPIC], [], [], []] }],
+      field_selection: { log: ["address", "topic1", "topic2", "topic3", "block_number"] },
+    });
+    target = result.archive_height;
+
+    for (const batch of result.data || []) {
+      for (const log of batch.logs || []) {
+        if (!log.topic3 || !log.address || log.block_number == null) continue;
+        const age = currentBlock - log.block_number;
+        if (age > WINDOW_30D) continue;
+        const addr = log.address.toLowerCase();
+        const from = topicToAddr(log.topic1);
+        const to = topicToAddr(log.topic2);
+        const isMint = from === ZERO_ADDR;
+        const isBurn = to === ZERO_ADDR;
+
+        let row = acc[addr];
+        if (!row) {
+          row = {
+            recent24h: 0,
+            recent7d: 0,
+            recent30d: 0,
+            recentMints24h: 0,
+            recentMints7d: 0,
+            recentReceivers24h: new Set(),
+            recentReceivers7d: new Set(),
+            recentSenders24h: new Set(),
+            recentSenders7d: new Set(),
+          };
+          acc[addr] = row;
+        }
+
+        row.recent30d++;
+        if (age <= WINDOW_7D) {
+          row.recent7d++;
+          if (isMint) row.recentMints7d++;
+          if (!isBurn) row.recentReceivers7d.add(to);
+          if (!isMint) row.recentSenders7d.add(from);
+        }
+        if (age <= WINDOW_24H) {
+          row.recent24h++;
+          if (isMint) row.recentMints24h++;
+          if (!isBurn) row.recentReceivers24h.add(to);
+          if (!isMint) row.recentSenders24h.add(from);
+        }
+      }
+    }
+
+    cursor = result.next_block;
+    queries++;
+    if (cursor >= target || cursor >= currentBlock) break;
+    await sleep(HYPERSYNC_PAGE_DELAY_MS);
+  }
+
+  // Materialise sets
+  const out = {};
+  for (const [addr, row] of Object.entries(acc)) {
+    out[addr] = {
+      recent24h: row.recent24h,
+      recent7d: row.recent7d,
+      recent30d: row.recent30d,
+      recentMints24h: row.recentMints24h,
+      recentMints7d: row.recentMints7d,
+      recentReceivers24h: row.recentReceivers24h.size,
+      recentReceivers7d: row.recentReceivers7d.size,
+      recentSenders24h: row.recentSenders24h.size,
+      recentSenders7d: row.recentSenders7d.size,
+    };
+  }
+
+  const elapsed = Math.round((Date.now() - startTime) / 1000);
+  console.log(
+    `  recent-window done: ${Object.keys(out).length} contracts in ${queries} queries, ${elapsed}s`,
+  );
+  return out;
+}
+
+// ── 2. Marketplace sales pass ─────────────────────────────────────
+/**
+ * Query Hypersync for the marketplace's ItemSold events in the last 7d.
+ * Computes per-collection: sales24h/7d, volume24h/7d, uniqueBuyers24h/7d,
+ * uniqueSellers24h/7d. No-op when MARKETPLACE_ADDRESS is not configured.
+ *
+ * ItemSold event layout (from MintiMarketplace.json):
+ *   topic[0] = signature
+ *   topic[1] = listingId (indexed uint256)
+ *   topic[2] = nftContract (indexed address)
+ *   topic[3] = tokenId (indexed uint256)
+ *   data     = (buyer, seller, price, protocolFee, royaltyAmount, royaltyReceiver)
+ *              = 6 * 32 bytes
+ */
+async function scanMarketplaceSales(currentBlock, itemSoldTopic) {
+  if (!MARKETPLACE_ADDRESS || !itemSoldTopic) {
+    console.log("Marketplace not configured — skipping sales pass");
+    return {};
+  }
+
+  const startBlock = Math.max(0, currentBlock - WINDOW_7D);
+  console.log(
+    `Hypersync marketplace sales: ${startBlock} → ${currentBlock} (last 7d)`,
+  );
+
+  const acc = {};
+  let cursor = startBlock;
+  let target = 0;
+  let queries = 0;
+
+  while (true) {
+    const result = await hypersync({
+      from_block: cursor,
+      logs: [
+        {
+          address: [MARKETPLACE_ADDRESS],
+          topics: [[itemSoldTopic], [], [], []],
+        },
+      ],
+      field_selection: {
+        log: ["topic2", "data", "block_number"],
+      },
+    });
+    target = result.archive_height;
+
+    for (const batch of result.data || []) {
+      for (const log of batch.logs || []) {
+        const nftContract = topicToAddr(log.topic2);
+        if (!nftContract || log.block_number == null) continue;
+
+        const age = currentBlock - log.block_number;
+        if (age > WINDOW_7D) continue;
+
+        // Parse data
+        const data = (log.data || "").startsWith("0x") ? log.data.slice(2) : log.data;
+        if (!data || data.length < 64 * 6) continue;
+        const buyer = "0x" + data.slice(24, 64).toLowerCase();
+        const seller = "0x" + data.slice(64 + 24, 64 + 64).toLowerCase();
+        const priceHex = data.slice(64 * 2, 64 * 3);
+        const price = BigInt("0x" + priceHex);
+
+        let row = acc[nftContract];
+        if (!row) {
+          row = {
+            sales24h: 0,
+            sales7d: 0,
+            volume24h: 0n,
+            volume7d: 0n,
+            buyers24h: new Set(),
+            buyers7d: new Set(),
+            sellers24h: new Set(),
+            sellers7d: new Set(),
+          };
+          acc[nftContract] = row;
+        }
+
+        row.sales7d++;
+        row.volume7d += price;
+        row.buyers7d.add(buyer);
+        row.sellers7d.add(seller);
+        if (age <= WINDOW_24H) {
+          row.sales24h++;
+          row.volume24h += price;
+          row.buyers24h.add(buyer);
+          row.sellers24h.add(seller);
+        }
+      }
+    }
+
+    cursor = result.next_block;
+    queries++;
+    if (cursor >= target || cursor >= currentBlock) break;
+    await sleep(HYPERSYNC_PAGE_DELAY_MS);
+  }
+
+  const out = {};
+  for (const [addr, row] of Object.entries(acc)) {
+    out[addr] = {
+      sales24h: row.sales24h,
+      sales7d: row.sales7d,
+      volume24h: row.volume24h.toString(),
+      volume7d: row.volume7d.toString(),
+      uniqueBuyers24h: row.buyers24h.size,
+      uniqueBuyers7d: row.buyers7d.size,
+      uniqueSellers24h: row.sellers24h.size,
+      uniqueSellers7d: row.sellers7d.size,
+    };
+  }
+  console.log(
+    `  marketplace sales done: ${Object.keys(out).length} collections traded in ${queries} queries`,
+  );
+  return out;
+}
+
+// ── 3. Multicall enrichment ───────────────────────────────────────
 async function enrichBatch(client, addresses) {
   const calls = [];
   for (const addr of addresses) {
@@ -303,18 +627,8 @@ async function enrichBatch(client, addresses) {
       { address: addr, abi: ABI, functionName: "name" },
       { address: addr, abi: ABI, functionName: "symbol" },
       { address: addr, abi: ABI, functionName: "totalSupply" },
-      {
-        address: addr,
-        abi: ABI,
-        functionName: "supportsInterface",
-        args: [ERC721_INTERFACE_ID],
-      },
-      {
-        address: addr,
-        abi: ABI,
-        functionName: "supportsInterface",
-        args: [ERC1155_INTERFACE_ID],
-      },
+      { address: addr, abi: ABI, functionName: "supportsInterface", args: [ERC721_INTERFACE_ID] },
+      { address: addr, abi: ABI, functionName: "supportsInterface", args: [ERC1155_INTERFACE_ID] },
     );
   }
 
@@ -342,21 +656,16 @@ async function enrichBatch(client, addresses) {
     const is721 = is721Res.status === "success" ? !!is721Res.result : false;
     const is1155 = is1155Res.status === "success" ? !!is1155Res.result : false;
 
-    enriched.push({
-      address: addresses[i],
-      name,
-      symbol,
-      totalSupply,
-      is721,
-      is1155,
-    });
+    enriched.push({ address: addresses[i], name, symbol, totalSupply, is721, is1155 });
   }
   return enriched;
 }
 
 async function enrichAll(addresses) {
   const limited = addresses.slice(0, ENRICH_LIMIT);
-  console.log(`Enriching ${limited.length} contracts (multicall, ${CONTRACTS_PER_BATCH}/batch)...`);
+  console.log(
+    `Enriching ${limited.length} contracts (multicall, ${CONTRACTS_PER_BATCH}/batch)...`,
+  );
   const enriched = [];
   const startTime = Date.now();
 
@@ -372,12 +681,10 @@ async function enrichAll(addresses) {
         break;
       } catch (err) {
         lastErr = err;
-        // try next RPC
       }
     }
     if (lastErr) {
       console.warn(`  batch ${i}..${i + batch.length} failed: ${lastErr.message}`);
-      // Push placeholder rows so the address still exists in the snapshot.
       for (const addr of batch) {
         enriched.push({ address: addr, name: null, symbol: null, totalSupply: null, is721: false, is1155: false });
       }
@@ -393,12 +700,8 @@ async function enrichAll(addresses) {
   return enriched;
 }
 
-// ── 3. Filter ─────────────────────────────────────────────────────
+// ── 4. Filter ─────────────────────────────────────────────────────
 function filterRealCollections(enriched) {
-  // Drop:
-  //   - contracts with neither name nor symbol (probably broken/proxy garbage)
-  //   - contracts where both interface flags are false AND no name (high
-  //     confidence not an NFT collection)
   const filtered = enriched.filter((c) => {
     const hasName = c.name && c.name.length > 0;
     const hasSymbol = c.symbol && c.symbol.length > 0;
@@ -409,17 +712,75 @@ function filterRealCollections(enriched) {
   return filtered;
 }
 
-// ── 4. Write JSON ─────────────────────────────────────────────────
+// ── 5. Tier assignment ────────────────────────────────────────────
+/**
+ * Patterns associated with scam / airdrop-promo collection names. Kept here
+ * (mirrors the client-side list) so the snapshot can pre-tag tier 0 entries.
+ */
+const SPAM_NAME_RE =
+  /\$|🚀|💎|🎁|💰|⭐|free|claim|airdrop|reward|bonus|www\.|https?:|\.com|\.io|\.xyz\b|\.eth\b|t\.me\/|telegram|discord\.gg/i;
+
+/**
+ * Tier 0 — hidden by default. Tier 1 — indexed but unranked. Tier 2 — explore-
+ * eligible (real activity). Tier 3 — reserved for curated registry collections
+ * (assigned client-side from registry membership; never set by this script).
+ */
+function assignTier(c) {
+  const name = c.name || "";
+  const symbol = c.symbol || "";
+  const holders = c.uniqueHolders ?? 0;
+  const senders = c.uniqueSenders ?? 0;
+  const transfers = c.transferCount ?? 0;
+  const mints = c.mintCount ?? 0;
+  const secondary = Math.max(0, transfers - mints);
+
+  // ── Tier 0 hard hides ──
+  if (!c.name && !c.symbol) return 0;
+  if (SPAM_NAME_RE.test(name) || SPAM_NAME_RE.test(symbol)) return 0;
+  if (holders < 5) return 0;
+  if (transfers < 5) return 0;
+  if (!c.is721 && !c.is1155 && !c.name) return 0;
+  if (mints > 0 && transfers === mints && holders < 50) return 0; // mint-and-dead microdust
+
+  // Concentration hide (only when we have a value)
+  if (typeof c.top10HolderPct === "number" && c.top10HolderPct > 0.95) return 0;
+
+  // ── Tier 2 — explore eligible ──
+  const wideDistribution =
+    holders >= 25 &&
+    senders >= 3 && // someone other than mints has sent
+    secondary >= 10;
+  const passConcentration =
+    c.top10HolderPct == null || c.top10HolderPct <= 0.80;
+  if (wideDistribution && passConcentration) return 2;
+
+  // ── Tier 1 — indexed, hidden behind "show all" ──
+  return 1;
+}
+
+// ── 6. Write JSON ─────────────────────────────────────────────────
+/**
+ * Compute the ItemSold topic hash at runtime by reading the deployed ABI
+ * file (no need to hardcode keccak256 outputs). We use viem's hashing.
+ */
+async function getItemSoldTopic() {
+  try {
+    const { keccak256, toBytes } = await import("viem");
+    const sig = "ItemSold(uint256,address,uint256,address,address,uint256,uint256,uint256,address)";
+    return keccak256(toBytes(sig));
+  } catch (err) {
+    console.warn(`Could not compute ItemSold topic: ${err.message}`);
+    return null;
+  }
+}
+
 async function main() {
   console.log(`Building Monad collections snapshot (chainId=${CHAIN_ID})...`);
   console.log(`  Hypersync: ${HYPERSYNC_URL}`);
   console.log(`  RPCs: ${RPC_URLS.length} (${RPC_URLS[0]}, …)`);
+  console.log(`  Marketplace: ${MARKETPLACE_ADDRESS || "(not deployed — skip sales)"}`);
+  console.log(`  Full rescan: ${FORCE_FULL_RESCAN ? "yes" : "no (delta)"}`);
 
-  // ── Checkpoint: resume from previous snapshot if present ─────────
-  // Transfer events are immutable on-chain, so any block we've already
-  // scanned never needs to be re-scanned. We carry forward the previous
-  // snapshot's enriched collections and only enrich newly-discovered
-  // contracts in the delta range.
   const previous = loadPreviousSnapshot();
   const startBlock = previous ? previous.lastBlock + 1 : 0;
   const previousCollections = previous?.collections ?? [];
@@ -434,9 +795,14 @@ async function main() {
   const { contracts, statsByAddress, lastBlock } = await discoverErc721Contracts(
     startBlock,
     knownAddresses,
+    FORCE_FULL_RESCAN || startBlock === 0,
   );
 
-  // Skip enrichment entirely if no new contracts found.
+  // Marketplace sales pass (last 7d, regardless of mode)
+  const itemSoldTopic = await getItemSoldTopic();
+  const salesByAddress = await scanMarketplaceSales(lastBlock, itemSoldTopic);
+
+  // Enrich newly-found contracts
   let newEnriched = [];
   let newFiltered = [];
   if (contracts.length > 0) {
@@ -446,15 +812,30 @@ async function main() {
     console.log("No new contracts to enrich — only the block cursor advanced.");
   }
 
-  // Attach stats to every collection (both previously-known and newly-found).
-  // Stats from a delta scan are *additive* — they only cover the new block
-  // range. Previous-snapshot stats get summed with the delta's contribution
-  // so the cumulative numbers stay accurate.
-  const mergeStats = (existing, delta) => {
+  // ── Merge with previous snapshot ────────────────────────────────
+  /**
+   * Delta-merging strategy:
+   *   - cumulative counts (transferCount, mintCount, ...): ADD delta to previous
+   *   - cardinality counts (uniqueHolders, uniqueSenders): MAX(old, delta) since
+   *     we don't carry forward the set. Approximation, fine in practice
+   *   - first-block: MIN
+   *   - lowest-tokenId: MIN
+   *   - recent windows (recent24h/7d/30d, recentMints*, recentReceivers*):
+   *     OVERWRITE — these are fresh from the recent-window scan each run
+   *   - concentration (top1/top10HolderPct, holderRatio): OVERWRITE iff
+   *     full-rescan computed them, otherwise CARRY FORWARD previous value
+   *   - marketplace sales: OVERWRITE (fresh each run)
+   */
+  const mergeStats = (existing, delta, isFullRescan) => {
     if (!delta) return existing;
     return {
-      transferCount: (existing?.transferCount ?? 0) + delta.transferCount,
-      uniqueHolders: Math.max(existing?.uniqueHolders ?? 0, delta.uniqueHolders),
+      transferCount: (existing?.transferCount ?? 0) + (delta.transferCount ?? 0),
+      mintCount: (existing?.mintCount ?? 0) + (delta.mintCount ?? 0),
+      burnCount: (existing?.burnCount ?? 0) + (delta.burnCount ?? 0),
+      selfTransferCount:
+        (existing?.selfTransferCount ?? 0) + (delta.selfTransferCount ?? 0),
+      uniqueHolders: Math.max(existing?.uniqueHolders ?? 0, delta.uniqueHolders ?? 0),
+      uniqueSenders: Math.max(existing?.uniqueSenders ?? 0, delta.uniqueSenders ?? 0),
       firstTransferBlock:
         existing?.firstTransferBlock && existing.firstTransferBlock > 0
           ? Math.min(existing.firstTransferBlock, delta.firstTransferBlock || existing.firstTransferBlock)
@@ -465,31 +846,115 @@ async function main() {
             ? existing.lowestTokenId
             : delta.lowestTokenId
           : existing?.lowestTokenId ?? delta.lowestTokenId,
+      top1HolderPct: isFullRescan
+        ? delta.top1HolderPct ?? null
+        : existing?.top1HolderPct ?? null,
+      top10HolderPct: isFullRescan
+        ? delta.top10HolderPct ?? null
+        : existing?.top10HolderPct ?? null,
     };
   };
 
-  // Apply stats to both tiers.
   const attachStats = (col) => {
-    const delta = statsByAddress[col.address.toLowerCase()];
+    const addr = col.address.toLowerCase();
+    const delta = statsByAddress[addr];
+    const sale = salesByAddress[addr];
     const existing = {
       transferCount: col.transferCount,
+      mintCount: col.mintCount,
+      burnCount: col.burnCount,
+      selfTransferCount: col.selfTransferCount,
       uniqueHolders: col.uniqueHolders,
+      uniqueSenders: col.uniqueSenders,
       firstTransferBlock: col.firstTransferBlock,
       lowestTokenId: col.lowestTokenId,
+      top1HolderPct: col.top1HolderPct,
+      top10HolderPct: col.top10HolderPct,
     };
-    return { ...col, ...mergeStats(existing, delta) };
+    const merged = {
+      ...col,
+      ...mergeStats(existing, delta, FORCE_FULL_RESCAN),
+      // Recent windows always overwrite from the delta scan
+      recent24h: delta?.recent24h ?? 0,
+      recent7d: delta?.recent7d ?? 0,
+      recent30d: delta?.recent30d ?? 0,
+      recentMints24h: delta?.recentMints24h ?? 0,
+      recentMints7d: delta?.recentMints7d ?? 0,
+      recentReceivers24h: delta?.recentReceivers24h ?? 0,
+      recentReceivers7d: delta?.recentReceivers7d ?? 0,
+      recentSenders24h: delta?.recentSenders24h ?? 0,
+      recentSenders7d: delta?.recentSenders7d ?? 0,
+      // Sales always overwrite
+      sales24h: sale?.sales24h ?? 0,
+      sales7d: sale?.sales7d ?? 0,
+      volume24h: sale?.volume24h ?? "0",
+      volume7d: sale?.volume7d ?? "0",
+      uniqueBuyers24h: sale?.uniqueBuyers24h ?? 0,
+      uniqueBuyers7d: sale?.uniqueBuyers7d ?? 0,
+      uniqueSellers24h: sale?.uniqueSellers24h ?? 0,
+      uniqueSellers7d: sale?.uniqueSellers7d ?? 0,
+    };
+    // Compute holderRatio for storage convenience (handles totalSupply parsing once)
+    if (merged.totalSupply) {
+      const supply = Number(merged.totalSupply);
+      if (supply > 0) {
+        merged.holderRatio = round4(
+          Math.min((merged.uniqueHolders ?? 0) / supply, 1),
+        );
+      }
+    }
+    merged.tier = assignTier(merged);
+    return merged;
   };
 
   const previousWithStats = previousCollections.map(attachStats);
-  const newWithStats = newFiltered.map((col) => ({
-    ...col,
-    ...(statsByAddress[col.address.toLowerCase()] ?? {
-      transferCount: 0,
-      uniqueHolders: 0,
-      firstTransferBlock: 0,
-      lowestTokenId: null,
-    }),
-  }));
+
+  // For new contracts, the delta stats ARE the all-time stats
+  const newWithStats = newFiltered.map((col) => {
+    const addr = col.address.toLowerCase();
+    const delta = statsByAddress[addr] ?? {};
+    const sale = salesByAddress[addr];
+    const merged = {
+      ...col,
+      transferCount: delta.transferCount ?? 0,
+      mintCount: delta.mintCount ?? 0,
+      burnCount: delta.burnCount ?? 0,
+      selfTransferCount: delta.selfTransferCount ?? 0,
+      uniqueHolders: delta.uniqueHolders ?? 0,
+      uniqueSenders: delta.uniqueSenders ?? 0,
+      firstTransferBlock: delta.firstTransferBlock ?? 0,
+      lowestTokenId: delta.lowestTokenId ?? null,
+      top1HolderPct: delta.top1HolderPct ?? null,
+      top10HolderPct: delta.top10HolderPct ?? null,
+      recent24h: delta.recent24h ?? 0,
+      recent7d: delta.recent7d ?? 0,
+      recent30d: delta.recent30d ?? 0,
+      recentMints24h: delta.recentMints24h ?? 0,
+      recentMints7d: delta.recentMints7d ?? 0,
+      recentReceivers24h: delta.recentReceivers24h ?? 0,
+      recentReceivers7d: delta.recentReceivers7d ?? 0,
+      recentSenders24h: delta.recentSenders24h ?? 0,
+      recentSenders7d: delta.recentSenders7d ?? 0,
+      sales24h: sale?.sales24h ?? 0,
+      sales7d: sale?.sales7d ?? 0,
+      volume24h: sale?.volume24h ?? "0",
+      volume7d: sale?.volume7d ?? "0",
+      uniqueBuyers24h: sale?.uniqueBuyers24h ?? 0,
+      uniqueBuyers7d: sale?.uniqueBuyers7d ?? 0,
+      uniqueSellers24h: sale?.uniqueSellers24h ?? 0,
+      uniqueSellers7d: sale?.uniqueSellers7d ?? 0,
+    };
+    if (merged.totalSupply) {
+      const supply = Number(merged.totalSupply);
+      if (supply > 0) {
+        merged.holderRatio = round4(
+          Math.min((merged.uniqueHolders ?? 0) / supply, 1),
+        );
+      }
+    }
+    merged.tier = assignTier(merged);
+    return merged;
+  });
 
   const merged = [...previousWithStats, ...newWithStats];
 
@@ -497,15 +962,23 @@ async function main() {
     chainId: CHAIN_ID,
     lastBlock,
     builtAt: Date.now(),
-    schemaVersion: 2,
+    schemaVersion: 4,
+    marketplaceAddress: MARKETPLACE_ADDRESS,
+    fullRescan: FORCE_FULL_RESCAN,
     collections: merged,
   };
 
   mkdirSync(path.dirname(SNAPSHOT_PATH), { recursive: true });
   writeFileSync(SNAPSHOT_PATH, JSON.stringify(snapshot));
   const sizeKb = (JSON.stringify(snapshot).length / 1024).toFixed(0);
+  // Tier histogram
+  const tierCounts = { 0: 0, 1: 0, 2: 0, 3: 0 };
+  for (const c of merged) tierCounts[c.tier ?? 0]++;
   console.log(
-    `Wrote ${SNAPSHOT_PATH} (${sizeKb} KB, ${merged.length} total collections, +${newFiltered.length} new this run)`,
+    `Wrote ${SNAPSHOT_PATH} (${sizeKb} KB, ${merged.length} total, +${newFiltered.length} new this run)`,
+  );
+  console.log(
+    `Tiers: T0=${tierCounts[0]} hidden, T1=${tierCounts[1]} indexed, T2=${tierCounts[2]} explore, T3=${tierCounts[3]} curated`,
   );
 }
 

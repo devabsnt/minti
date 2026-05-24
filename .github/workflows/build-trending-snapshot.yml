@@ -1,0 +1,48 @@
+name: Build trending snapshot
+
+# Refresh the lightweight `/data/monad-trending.json` file used by the
+# /explore hero strip. Runs more often than the heavy collections index
+# because the trending data needs to be fresh — last 6 hours of activity.
+#
+# Important: this commits the resulting JSON back to main so the next Pages
+# deploy picks it up. Pages then auto-deploys on the workflow_run completion.
+
+on:
+  schedule:
+    - cron: "15 * * * *" # Hourly at :15
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+# Don't pile up runs if a previous one is slow.
+concurrency:
+  group: build-trending-snapshot
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install script deps
+        run: cd scripts && npm install
+
+      - name: Build trending snapshot
+        env:
+          HYPERSYNC_TOKEN: ${{ secrets.HYPERSYNC_TOKEN }}
+        run: node scripts/build-trending-snapshot.mjs
+
+      - name: Commit snapshot if changed
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "chore: refresh Monad trending snapshot"
+          file_pattern: frontend/public/data/monad-trending.json
+          commit_user_name: minti-bot
+          commit_user_email: minti-bot@users.noreply.github.com

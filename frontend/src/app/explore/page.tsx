@@ -22,8 +22,15 @@ import {
   useCollectionsIndex,
   searchIndex,
   hasSnapshot,
+  isLikelyReal,
+  isTrendable,
+  momentum,
   type IndexedCollection,
+  type SortKey,
+  type ActivityWindow,
 } from "@/hooks/useCollectionsIndex";
+import { useTrendingLive } from "@/hooks/useTrendingLive";
+import { useHiddenCollections } from "@/hooks/useHiddenCollections";
 import { isRegistryDeployed } from "@/lib/evmfs";
 import { kindTier } from "@/lib/abi/EVMFSCollectionRegistry";
 
@@ -31,6 +38,12 @@ export default function ExplorePage() {
   const router = useRouter();
   const [page, setPage] = useState(0);
   const [search, setSearch] = useState("");
+  const [showAll, setShowAll] = useState(false);
+  // New filter/sort state
+  const [sortKey, setSortKey] = useState<SortKey>("trending");
+  const [window, setWindow] = useState<ActivityWindow>("7d");
+  const [tokenType, setTokenType] = useState<"721" | "1155" | "any">("any");
+  const [viewMode, setViewMode] = useState<"grid" | "list">("grid");
   const { browseChainId } = useBrowseChain();
   const registryLive = isRegistryDeployed(browseChainId);
   const snapshotAvailable = hasSnapshot(browseChainId);
@@ -38,6 +51,12 @@ export default function ExplorePage() {
   const { data: registryData, isLoading: registryLoading } =
     useRegisteredCollections(page);
   const { data: indexData, isLoading: indexLoading } = useCollectionsIndex();
+  // Last 6h transfer counts from a static cron-built snapshot
+  // (`/data/monad-trending.json`, refreshed hourly). Used to rank the
+  // Trending hero with fresher data than the daily collections snapshot.
+  // Backed by a server-side cron so we never hit Hypersync per-user.
+  const { data: liveTrending } = useTrendingLive(6);
+  const { isHidden } = useHiddenCollections(browseChainId);
 
   const handleJump = useCallback(() => {
     const value = search.trim();
@@ -69,20 +88,152 @@ export default function ExplorePage() {
     );
   }, [registryCollections, isSearchingByText, trimmed]);
 
-  // Long-tail collections from the snapshot. Exclude any that are already
-  // in the registry view (dedupe by lower-cased address).
+  // Long-tail collections from the snapshot. Apply three layers of filter:
+  //   1. Address dedupe — already verified, skip
+  //   2. Name copycat — if the name matches a verified collection, hide
+  //      (a long-tail "Baolings" with a different contract address is a
+  //      knockoff, not the real one)
+  //   3. Spam heuristic — `isLikelyReal` floor unless user opted to see all
   const registryAddresses = useMemo(
     () => new Set(registryCollections.map((c) => c.nftContract.toLowerCase())),
+    [registryCollections],
+  );
+  const registryNames = useMemo(
+    () =>
+      new Set(
+        registryCollections
+          .flatMap((c) => [c.name, c.symbol])
+          .filter(Boolean)
+          .map((s) => s.toLowerCase()),
+      ),
     [registryCollections],
   );
 
   const longTail = useMemo<IndexedCollection[]>(() => {
     if (!indexData) return [];
-    const results = searchIndex(indexData, trimmed, 96);
-    return results.filter(
-      (c) => !registryAddresses.has(c.address.toLowerCase()),
+    // Search the full index (already deduped by name internally) with the
+    // chosen sort + window + type filter.
+    const results = searchIndex(indexData, {
+      query: trimmed,
+      limit: 200,
+      sortKey,
+      window,
+      tokenType,
+    });
+    return results
+      .filter((c) => {
+        // 1. Address dedupe — already in verified tier
+        if (registryAddresses.has(c.address.toLowerCase())) return false;
+        // 2. Name copycat dedupe
+        const name = (c.name || "").toLowerCase();
+        const symbol = (c.symbol || "").toLowerCase();
+        if (name && registryNames.has(name)) return false;
+        if (symbol && registryNames.has(symbol)) return false;
+        // 3. User-hidden in IndexedDB
+        if (isHidden(c.address)) return false;
+        // 4. Spam heuristic — opt-out via the show-all toggle
+        if (!showAll && !isLikelyReal(c)) return false;
+        return true;
+      })
+      .slice(0, 96);
+  }, [indexData, trimmed, registryAddresses, registryNames, showAll, sortKey, window, tokenType, isHidden]);
+
+  // Trending hero — six big cards at the top showing collections people
+  // are *actually* trading right now. Uses isTrendable() which is stricter
+  // than isLikelyReal — requires real community size, sustained history,
+  // and rejects "just deployed, dumping a thousand mints in 24h" airdrops.
+  //
+  // Includes verified registry collections (real curated ones get the
+  // verified badge). Names overlapping the registry get the copycat dedupe
+  // applied so a fake "Skrumpeys" doesn't push out the real one.
+  const trendingHero = useMemo<
+    Array<{ collection: IndexedCollection; verified: boolean; live6h: number }>
+  >(() => {
+    if (!indexData || trimmed) return [];
+    const live = liveTrending; // Map<address, transferCount> over last 6h
+
+    // Score a collection using live 6h count when available; fall back to
+    // the snapshot's recent24h. The static trending file is fetched
+    // up-front so this is usually warm by first render.
+    const liveScore = (c: IndexedCollection): number => {
+      if (live) return live.get(c.address.toLowerCase()) ?? 0;
+      return c.recent24h ?? 0;
+    };
+
+    // Verified collections lifted into IndexedCollection-ish shape so the
+    // hero can rank them next to long-tail entries. They get a free pass
+    // through filters since they're manually vetted.
+    const verifiedAsIndex: IndexedCollection[] = registryCollections.map(
+      (r) => {
+        const fromSnapshot = indexData.collections.find(
+          (c) => c.address.toLowerCase() === r.nftContract.toLowerCase(),
+        );
+        return (
+          fromSnapshot ?? {
+            address: r.nftContract,
+            name: r.name,
+            symbol: r.symbol,
+            totalSupply: r.totalSupply ? r.totalSupply.toString() : null,
+            is721: true,
+            is1155: false,
+          }
+        );
+      },
     );
-  }, [indexData, trimmed, registryAddresses]);
+
+    const longTailCandidates = indexData.collections.filter((c) => {
+      // Skip address dedupes vs verified
+      if (registryAddresses.has(c.address.toLowerCase())) return false;
+      const name = (c.name || "").toLowerCase();
+      const symbol = (c.symbol || "").toLowerCase();
+      // Skip name copycats
+      if (name && registryNames.has(name)) return false;
+      if (symbol && registryNames.has(symbol)) return false;
+      // Skip user-hidden
+      if (isHidden(c.address)) return false;
+      // Strict trendable check on snapshot stats
+      return isTrendable(c, c.recent24h ?? 0);
+    });
+
+    // Merge verified (auto-included) + long-tail trendables, then rank by
+    // the live score (or snapshot fallback).
+    const combined = [
+      ...verifiedAsIndex.map((c) => ({ collection: c, verified: true })),
+      ...longTailCandidates.map((c) => ({ collection: c, verified: false })),
+    ];
+    combined.sort(
+      (a, b) => liveScore(b.collection) - liveScore(a.collection),
+    );
+
+    return combined
+      .map((entry) => ({ ...entry, live6h: liveScore(entry.collection) }))
+      .filter(({ live6h }) => live6h > 0)
+      .slice(0, 6);
+  }, [
+    indexData,
+    trimmed,
+    registryCollections,
+    registryAddresses,
+    registryNames,
+    liveTrending,
+    isHidden,
+  ]);
+
+  // Count of how many long-tail items the spam filter is hiding right now.
+  const hiddenCount = useMemo<number>(() => {
+    if (!indexData || showAll) return 0;
+    let count = 0;
+    for (const c of indexData.collections) {
+      if (registryAddresses.has(c.address.toLowerCase())) continue;
+      const name = (c.name || "").toLowerCase();
+      const symbol = (c.symbol || "").toLowerCase();
+      if (name && registryNames.has(name)) { count++; continue; }
+      if (symbol && registryNames.has(symbol)) { count++; continue; }
+      if (isHidden(c.address)) { count++; continue; }
+      if (!isLikelyReal(c)) count++;
+    }
+    return count;
+  }, [indexData, registryAddresses, registryNames, showAll, isHidden]);
 
   return (
     <div className="max-w-7xl mx-auto px-4 py-8">
@@ -174,24 +325,136 @@ export default function ExplorePage() {
           </div>
         )}
 
+        {/* ── Trending hero ────────────────────────────────────── */}
+        {trendingHero.length > 0 && (
+          <section>
+            <div className="flex items-baseline justify-between mb-3">
+              <h2 className="text-sm font-medium uppercase tracking-wide text-foreground-secondary">
+                <span className="text-mint">●</span> Trending now
+                <span className="ml-2 text-xs text-foreground-secondary/70">
+                  last 24h
+                </span>
+              </h2>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+              {trendingHero.map(({ collection, verified, live6h }, idx) => (
+                <TrendingHeroCard
+                  key={collection.address}
+                  rank={idx + 1}
+                  collection={collection}
+                  verified={verified}
+                  live6h={live6h}
+                />
+              ))}
+            </div>
+          </section>
+        )}
+
         {/* ── Long-tail / discovered ───────────────────────────── */}
         {snapshotAvailable && (
           <section>
-            <h2 className="text-sm font-medium uppercase tracking-wide text-foreground-secondary mb-3">
-              All collections
-              {longTail.length > 0 && (
-                <span className="ml-2 text-xs">{longTail.length}</span>
+            <div className="flex flex-col gap-3 mb-4">
+              {/* Header row: title + show-hidden toggle */}
+              <div className="flex items-baseline justify-between gap-3">
+                <h2 className="text-sm font-medium uppercase tracking-wide text-foreground-secondary">
+                  All collections
+                  {longTail.length > 0 && (
+                    <span className="ml-2 text-xs">{longTail.length}</span>
+                  )}
+                  {!indexData && indexLoading && (
+                    <span className="ml-2 text-xs text-foreground-secondary/70">
+                      loading…
+                    </span>
+                  )}
+                </h2>
+                {indexData && (
+                  <label className="text-xs text-foreground-secondary flex items-center gap-1.5 cursor-pointer select-none">
+                    <input
+                      type="checkbox"
+                      checked={showAll}
+                      onChange={(e) => setShowAll(e.target.checked)}
+                      className="accent-mint"
+                    />
+                    Show hidden
+                    {!showAll && hiddenCount > 0 && (
+                      <span className="text-foreground-secondary/70">
+                        ({formatNumber(hiddenCount)})
+                      </span>
+                    )}
+                  </label>
+                )}
+              </div>
+
+              {/* Filter toolbar — sort + window + type chips */}
+              {indexData && (
+                <div className="flex flex-wrap items-center gap-2 text-xs">
+                  {/* Sort */}
+                  <label className="flex items-center gap-1.5 text-foreground-secondary">
+                    Sort
+                    <select
+                      value={sortKey}
+                      onChange={(e) => setSortKey(e.target.value as SortKey)}
+                      className="bg-background-secondary border border-border rounded-md px-2 py-1 text-foreground focus:outline-none focus:border-mint"
+                    >
+                      <option value="trending">Trending</option>
+                      <option value="holders">Holders</option>
+                      <option value="newest">Newest</option>
+                      <option value="name">Name (A→Z)</option>
+                    </select>
+                  </label>
+
+                  {/* Time window (only meaningful for trending) */}
+                  {sortKey === "trending" && (
+                    <div className="flex items-center gap-1">
+                      {(["24h", "7d", "30d", "all"] as ActivityWindow[]).map(
+                        (w) => (
+                          <button
+                            key={w}
+                            onClick={() => setWindow(w)}
+                            className={`px-2 py-1 rounded-md border transition-colors ${
+                              window === w
+                                ? "bg-mint/10 border-mint/40 text-mint"
+                                : "border-border text-foreground-secondary hover:border-mint/30"
+                            }`}
+                          >
+                            {w}
+                          </button>
+                        ),
+                      )}
+                    </div>
+                  )}
+
+                  {/* Type chip */}
+                  <div className="flex items-center gap-1 ml-auto">
+                    {(["any", "721", "1155"] as const).map((t) => (
+                      <button
+                        key={t}
+                        onClick={() => setTokenType(t)}
+                        className={`px-2 py-1 rounded-md border transition-colors ${
+                          tokenType === t
+                            ? "bg-mint/10 border-mint/40 text-mint"
+                            : "border-border text-foreground-secondary hover:border-mint/30"
+                        }`}
+                      >
+                        {t === "any"
+                          ? "All"
+                          : t === "721"
+                            ? "ERC-721"
+                            : "ERC-1155"}
+                      </button>
+                    ))}
+                  </div>
+                </div>
               )}
-              {!indexData && indexLoading && (
-                <span className="ml-2 text-xs text-foreground-secondary/70">
-                  loading…
-                </span>
-              )}
-            </h2>
+            </div>
             {longTail.length > 0 ? (
               <NftGrid loading={false} empty={false}>
                 {longTail.map((c) => (
-                  <LongTailCard key={c.address} collection={c} />
+                  <LongTailCard
+                    key={c.address}
+                    collection={c}
+                    window={sortKey === "trending" ? window : "all"}
+                  />
                 ))}
               </NftGrid>
             ) : (
@@ -228,7 +491,13 @@ function rankByTier(items: readonly RegisteredCollection[]): RegisteredCollectio
  * loaded from the lowest-tokenId NFT's metadata) above name / symbol /
  * activity badge. Designed to feel like an OpenSea collection tile.
  */
-function LongTailCard({ collection }: { collection: IndexedCollection }) {
+function LongTailCard({
+  collection,
+  window,
+}: {
+  collection: IndexedCollection;
+  window: ActivityWindow;
+}) {
   const name = collection.name || collection.address.slice(0, 10);
   const symbol = collection.symbol || "";
 
@@ -237,14 +506,30 @@ function LongTailCard({ collection }: { collection: IndexedCollection }) {
   // the tokenId is set.
   const sampleTokenId =
     collection.lowestTokenId != null ? BigInt(collection.lowestTokenId) : 1n;
-  const { data: metadata } = useNftMetadata(
+  const { data: metadata, isError, isLoading } = useNftMetadata(
     collection.address as `0x${string}`,
     sampleTokenId,
     collection.is1155 && !collection.is721,
   );
 
+  // If metadata failed (all gateways exhausted) or completed without an
+  // image, hide the card entirely. Dead/abandoned collections are filtered
+  // out of the grid, layout stays clean. Loading state still renders the
+  // card (skeleton appears until the fetch resolves).
+  if (isError) return null;
+  if (!isLoading && metadata && !metadata.image) return null;
+
   const transferCount = collection.transferCount ?? 0;
   const uniqueHolders = collection.uniqueHolders ?? 0;
+  // Window-specific recent-activity number (only shown when sorting trending).
+  const windowedActivity =
+    window === "24h"
+      ? collection.recent24h
+      : window === "7d"
+        ? collection.recent7d
+        : window === "30d"
+          ? collection.recent30d
+          : null;
 
   return (
     <a
@@ -271,10 +556,19 @@ function LongTailCard({ collection }: { collection: IndexedCollection }) {
             {uniqueHolders > 0 && (
               <span>{formatCompact(uniqueHolders)} holders</span>
             )}
-            {uniqueHolders > 0 && transferCount > 0 && <span>·</span>}
-            {transferCount > 0 && (
+            {uniqueHolders > 0 &&
+              (windowedActivity != null
+                ? windowedActivity > 0
+                : transferCount > 0) && <span>·</span>}
+            {windowedActivity != null ? (
+              windowedActivity > 0 && (
+                <span className="text-mint/80">
+                  {formatCompact(windowedActivity)} in {window}
+                </span>
+              )
+            ) : transferCount > 0 ? (
               <span>{formatCompact(transferCount)} trades</span>
-            )}
+            ) : null}
           </div>
         )}
         {collection.totalSupply && Number(collection.totalSupply) > 0 && (
@@ -282,6 +576,92 @@ function LongTailCard({ collection }: { collection: IndexedCollection }) {
             {formatNumber(collection.totalSupply)} items
           </div>
         )}
+      </div>
+    </a>
+  );
+}
+
+/**
+ * Bigger, more visually prominent card for the trending hero strip. Shows
+ * rank number, verified badge, momentum %, live 6h transfer count.
+ */
+function TrendingHeroCard({
+  rank,
+  collection,
+  verified,
+  live6h,
+}: {
+  rank: number;
+  collection: IndexedCollection;
+  verified: boolean;
+  live6h: number;
+}) {
+  const name = collection.name || collection.address.slice(0, 10);
+  const symbol = collection.symbol || "";
+  const sampleTokenId =
+    collection.lowestTokenId != null ? BigInt(collection.lowestTokenId) : 1n;
+  const { data: metadata, isError, isLoading } = useNftMetadata(
+    collection.address as `0x${string}`,
+    sampleTokenId,
+    collection.is1155 && !collection.is721,
+  );
+
+  // Same "is the collection real / has resolvable content" check the
+  // long-tail cards do. If metadata can't be fetched at all (all gateways
+  // failed) or completed with no image, this is a dead/broken contract —
+  // don't put it at the top of trending.
+  if (isError) return null;
+  if (!isLoading && metadata && !metadata.image) return null;
+
+  const m = momentum(collection);
+  const momentumPct = m != null ? Math.round(m * 100) : null;
+
+  return (
+    <a
+      href={`/collection/${collection.address}`}
+      className="group relative flex gap-3 items-center p-3 border border-border rounded-xl bg-background-secondary hover:border-mint/40 hover:shadow-lg hover:shadow-mint-glow transition-all"
+    >
+      {/* Rank number */}
+      <div className="flex items-center justify-center w-6 text-sm font-bold text-foreground-secondary/70 flex-shrink-0">
+        {rank}
+      </div>
+
+      {/* Thumbnail */}
+      <div className="w-16 h-16 rounded-lg overflow-hidden border border-border flex-shrink-0">
+        <NftImage
+          src={metadata?.image || ""}
+          rawUri={metadata?.rawImageUri}
+          alt={name}
+          className="w-16 h-16"
+        />
+      </div>
+
+      {/* Text block */}
+      <div className="flex-1 min-w-0">
+        <div className="flex items-center gap-1.5">
+          <span className="text-sm font-semibold truncate">{name}</span>
+          {verified && (
+            <span
+              title="Verified by minti.art"
+              className="text-mint text-xs flex-shrink-0"
+            >
+              ✓
+            </span>
+          )}
+        </div>
+        <div className="text-xs text-foreground-secondary truncate">
+          {symbol}
+        </div>
+        <div className="flex items-center gap-2 text-xs mt-0.5">
+          <span className="text-mint">
+            {formatCompact(live6h)} <span className="text-foreground-secondary">in 6h</span>
+          </span>
+          {momentumPct != null && momentumPct > 0 && (
+            <span className="text-mint/80 text-xs">
+              +{momentumPct}%
+            </span>
+          )}
+        </div>
       </div>
     </a>
   );

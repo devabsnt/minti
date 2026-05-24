@@ -1,7 +1,7 @@
 "use client";
 
 import { useParams } from "next/navigation";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useAccount } from "wagmi";
 import { useCollectionListings } from "@/hooks/useListings";
 import { useCollectionBids, useCollectionOffers } from "@/hooks/useBids";
@@ -19,6 +19,8 @@ import { NftCard } from "@/components/nft/NftCard";
 import { NftImage } from "@/components/nft/NftImage";
 import { EvmfsTokenCard } from "@/components/collection/EvmfsTokenCard";
 import { OnChainVerifyPanel } from "@/components/collection/OnChainVerifyPanel";
+import { CollectionWarnings } from "@/components/collection/CollectionWarnings";
+import { HideCollectionButton } from "@/components/collection/HideCollectionButton";
 import {
   TraitFilter,
   filterIdsBySelection,
@@ -104,6 +106,12 @@ function CollectionPage({
   collectionAddress: `0x${string}`;
 }) {
   const { address } = useAccount();
+  // Wallet address is undefined on SSR but populated after client hydration —
+  // any conditional that depends on it would mismatch. Gate those branches on
+  // `mounted` so the server renders the unconnected state and the client
+  // re-renders after hydration without React flagging it.
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => setMounted(true), []);
   const [tab, setTab] = useState<CollectionTab>("browse");
   const [browsePage, setBrowsePage] = useState(0);
   const [listingPage, setListingPage] = useState(0);
@@ -243,17 +251,22 @@ function CollectionPage({
               </span>
             )}
           </p>
-          {address && (
-            <Button
-              variant="secondary"
-              size="sm"
-              onClick={() => setShowOfferModal(true)}
-            >
-              Collection Offer
-            </Button>
-          )}
+          <div className="flex items-center justify-end gap-2">
+            {mounted && address && (
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => setShowOfferModal(true)}
+              >
+                Collection Offer
+              </Button>
+            )}
+            <HideCollectionButton address={collectionAddress} />
+          </div>
         </div>
       </div>
+
+      <CollectionWarnings contractAddress={collectionAddress} />
 
       {offers && offers.length > 0 && (
         <div className="mb-8 border border-border rounded-xl p-4 bg-background-secondary">
@@ -287,18 +300,20 @@ function CollectionPage({
         </div>
       )}
 
-      {/* Your Items */}
-      {address && scanError && (
+      {/* Your Items — gated on `mounted` so SSR markup matches client
+          (wagmi's `address` is undefined server-side, populated after
+          hydration, which would otherwise mismatch). */}
+      {mounted && address && scanError && (
         <div className="mb-6 px-4 py-3 border border-danger/30 rounded-lg bg-danger/5 text-sm text-danger">
           Failed to scan your NFTs: {scanError.message}
         </div>
       )}
-      {address && scanLoading && (
+      {mounted && address && scanLoading && (
         <div className="mb-6 flex items-center gap-2 text-sm text-foreground-secondary">
           <Spinner size="sm" /> Scanning for your NFTs in this collection...
         </div>
       )}
-      {address && ownedDiscovered.length > 0 && (
+      {mounted && address && ownedDiscovered.length > 0 && (
         <div className="mb-8">
           <h3 className="text-sm font-medium mb-3">
             Your Items ({ownedDiscovered.length}
@@ -484,6 +499,10 @@ function TokenDetailPage({
   tokenId: string;
 }) {
   const { address } = useAccount();
+  // Mount gate for wallet-address-dependent conditionals — see CollectionPage
+  // for the same pattern.
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => setMounted(true), []);
   const { browseChainId } = useBrowseChain();
   const symbol = getNativeSymbol(browseChainId);
   const tokenIdBigInt = BigInt(tokenId);
@@ -615,7 +634,7 @@ function TokenDetailPage({
           )}
 
           {/* User actions: list / bid */}
-          {address && (
+          {mounted && address && (
             <div className="flex gap-2">
               {!hasListing && (
                 <Button
@@ -732,11 +751,13 @@ function TokenDetailPage({
                           {(offer.quantity - offer.fulfilled).toString()}
                         </span>
                       </div>
-                      {address?.toLowerCase() ===
-                        offer.bidder.toLowerCase() && (
-                        <CancelOfferButton offerId={offer.offerId} />
-                      )}
-                      {address &&
+                      {mounted &&
+                        address?.toLowerCase() ===
+                          offer.bidder.toLowerCase() && (
+                          <CancelOfferButton offerId={offer.offerId} />
+                        )}
+                      {mounted &&
+                        address &&
                         address.toLowerCase() !==
                           offer.bidder.toLowerCase() && (
                           <AcceptCollectionOfferButton

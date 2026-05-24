@@ -6,7 +6,8 @@ name: Build collections index
 
 on:
   schedule:
-    - cron: "0 6 * * *" # Daily 06:00 UTC — only the delta since last run
+    - cron: "0 6 * * 1-6" # Mon-Sat 06:00 UTC — delta since last run
+    - cron: "0 6 * * 0"   # Sun 06:00 UTC — FULL rescan (refreshes top1/top10 holder %)
   workflow_dispatch:
     inputs:
       force_full_rescan:
@@ -45,7 +46,15 @@ jobs:
           HYPERSYNC_TOKEN: ${{ secrets.HYPERSYNC_TOKEN }}
           MAX_BLOCKS: ${{ inputs.max_blocks }}
           ENRICH_LIMIT: ${{ inputs.enrich_limit }}
-          FORCE_FULL_RESCAN: ${{ inputs.force_full_rescan && '1' || '' }}
+          # FULL rescan if (a) user requested it via dispatch, OR
+          # (b) this is the Sunday cron — needed to refresh top1/top10
+          # holder concentration which isn't tracked incrementally.
+          FORCE_FULL_RESCAN: ${{ (inputs.force_full_rescan || github.event.schedule == '0 6 * * 0') && '1' || '' }}
+          # Marketplace address — falls through to "not deployed" if unset.
+          # Once MintiMarketplace is deployed on Monad, set this secret to
+          # the deployed address and ItemSold events start populating
+          # sales24h/7d, uniqueBuyers, volume.
+          MARKETPLACE_ADDRESS: ${{ secrets.MARKETPLACE_ADDRESS }}
         run: node scripts/build-collections-index.mjs
 
       - name: Commit snapshot if changed

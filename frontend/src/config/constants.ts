@@ -1,7 +1,12 @@
+// Browser-friendly IPFS gateways only. Pinata's public gateway blocks
+// cross-origin requests (no Access-Control-Allow-Origin header) for any
+// content not pinned to their service, so every fetch is wasted CORS
+// noise. The list below is gateways that reliably send CORS headers for
+// arbitrary CIDs.
 export const IPFS_GATEWAYS = [
   "https://ipfs.io/ipfs/",
-  "https://gateway.pinata.cloud/ipfs/",
   "https://dweb.link/ipfs/",
+  "https://4everland.io/ipfs/",
   "https://w3s.link/ipfs/",
 ];
 

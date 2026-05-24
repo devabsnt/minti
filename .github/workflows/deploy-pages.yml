@@ -1,0 +1,79 @@
+name: Deploy site to GitHub Pages
+
+# Builds the Next.js static export (`frontend/out/`) and publishes it to
+# GitHub Pages. Custom domain (minti.art) is set via the CNAME file under
+# `frontend/public/`, which Next copies into the export verbatim.
+#
+# Triggers:
+#   - push to main (any change deploys)
+#   - completion of the daily/hourly snapshot-refresh jobs (deploys with
+#     the fresh JSON data baked in)
+#   - manual dispatch
+#
+# Pages must be enabled under Settings → Pages → "Build and deployment" =
+# "GitHub Actions". The site then serves from minti.art.
+
+on:
+  push:
+    branches: [main]
+  workflow_run:
+    workflows:
+      - "Build collections index"
+      - "Build trending snapshot"
+    types: [completed]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# One deploy at a time. If we get two pushes in quick succession, GitHub
+# cancels the in-flight run and starts a new one with the latest commit.
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    # Only deploy if the upstream snapshot job actually succeeded — skip
+    # workflow_run events from failed/cancelled jobs.
+    if: ${{ github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend deps
+        working-directory: frontend
+        run: npm ci
+
+      - name: Build static export
+        working-directory: frontend
+        env:
+          NODE_ENV: production
+        run: npm run build
+
+      - name: Add .nojekyll
+        run: touch frontend/out/.nojekyll
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: frontend/out
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
