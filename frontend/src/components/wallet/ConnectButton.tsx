@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { ConnectButton as RainbowConnectButton } from "@rainbow-me/rainbowkit";
 
 export function ConnectButton() {
@@ -36,12 +37,12 @@ export function ConnectButton() {
               </button>
             ) : (
               <div className="flex items-center gap-2">
-                <a
+                <Link
                   href={`/wallet/${account.address}`}
                   className="text-sm text-foreground-secondary hover:text-mint transition-colors"
                 >
                   {account.displayName}
-                </a>
+                </Link>
                 <button
                   onClick={openAccountModal}
                   className="px-3 py-2 text-sm border border-border rounded-lg hover:border-mint/50 hover:text-mint transition-colors"

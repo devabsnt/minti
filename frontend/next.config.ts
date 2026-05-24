@@ -1,19 +1,23 @@
 import type { NextConfig } from "next";
 
-// Asset path prefix. When deploying to a GitHub Pages project URL
-// (devabsnt.github.io/<repo>/), Next needs to know the URL prefix so its
-// CSS/JS asset paths resolve. On the custom domain (minti.art) we serve
-// from root and basePath must be empty.
+// Deploy target switch.
+//   - Vercel (default): no basePath, no static export — Vercel handles
+//     dynamic routes natively
+//   - GitHub Pages project URL: set PAGES_BASE_PATH=/<repo> AND
+//     STATIC_EXPORT=1 — Next produces `out/` with asset prefix baked in
 //
-// Set `PAGES_BASE_PATH=/minti` in the Pages build env to use the project
-// URL; leave unset (default) for custom-domain serving.
+// All pages are "use client" so even when Vercel renders, there's no
+// server-side logic running. The "zero backend" principle is preserved.
 const basePath = process.env.PAGES_BASE_PATH || "";
+const staticExport = process.env.STATIC_EXPORT === "1";
 
 const nextConfig: NextConfig = {
-  // Static export only for production builds; dev server needs dynamic routes
-  output: process.env.NODE_ENV === "production" ? "export" : undefined,
+  output: staticExport ? "export" : undefined,
   basePath: basePath || undefined,
   assetPrefix: basePath || undefined,
+  env: {
+    NEXT_PUBLIC_BASE_PATH: basePath,
+  },
   images: {
     unoptimized: true,
   },

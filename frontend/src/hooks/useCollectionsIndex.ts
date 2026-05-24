@@ -3,6 +3,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { useBrowseChain } from "@/providers/ChainProvider";
 import { hasHypersync } from "@/lib/hypersync/client";
+import { withBasePath } from "@/lib/basePath";
 
 /**
  * Global collections index — a periodically-refreshed static snapshot at
@@ -489,7 +490,7 @@ export function useCollectionsIndex() {
     enabled: !!snapshotPath,
     staleTime: 60 * 60 * 1000, // 1 hour
     queryFn: async (): Promise<CollectionsIndex> => {
-      const resp = await fetch(snapshotPath);
+      const resp = await fetch(withBasePath(snapshotPath));
       if (!resp.ok) {
         throw new Error(`Snapshot fetch failed: ${resp.status}`);
       }
