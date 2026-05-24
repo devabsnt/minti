@@ -1,0 +1,170 @@
+"use client";
+
+import { useQuery, useQueries, useQueryClient } from "@tanstack/react-query";
+import { useRpc } from "@/providers/RpcProvider";
+import { useBrowseChain } from "@/providers/ChainProvider";
+import { resolveMetadata } from "@/lib/metadata";
+import { getFromCache, setInCache, metadataCacheKey } from "@/lib/cache";
+import {
+  createRpcPool,
+  executeBatchedMulticalls,
+  encodeCall,
+  decodeResult,
+  type MulticallRequest,
+} from "@/lib/rpcPool";
+import type { NftMetadata } from "@/types/nft";
+import type { Abi } from "viem";
+
+const TOKEN_URI_ABI = [
+  {
+    inputs: [{ type: "uint256", name: "tokenId" }],
+    name: "tokenURI",
+    outputs: [{ type: "string" }],
+    stateMutability: "view",
+    type: "function",
+  },
+  {
+    inputs: [{ type: "uint256", name: "id" }],
+    name: "uri",
+    outputs: [{ type: "string" }],
+    stateMutability: "view",
+    type: "function",
+  },
+] as const satisfies Abi;
+
+const METADATA_STALE_TIME = 24 * 60 * 60 * 1000;
+
+/**
+ * Single-token metadata hook (for detail pages).
+ */
+export function useNftMetadata(
+  nftContract: `0x${string}` | undefined,
+  tokenId: bigint | undefined,
+  isERC1155 = false
+) {
+  const { browseChainId } = useBrowseChain();
+  const { getPublicClient } = useRpc();
+
+  return useQuery({
+    queryKey: ["nft-metadata", browseChainId, nftContract, tokenId?.toString()],
+    queryFn: async (): Promise<NftMetadata> => {
+      const cacheKey = metadataCacheKey(browseChainId, nftContract!, tokenId!.toString());
+      const cached = await getFromCache<NftMetadata>(cacheKey);
+      if (cached) return cached;
+
+      const client = getPublicClient(browseChainId);
+      const uri = (await client.readContract({
+        address: nftContract!,
+        abi: TOKEN_URI_ABI,
+        functionName: isERC1155 ? "uri" : "tokenURI",
+        args: [tokenId!],
+      })) as string;
+
+      const metadata = await resolveMetadata(uri, tokenId!);
+      await setInCache(cacheKey, metadata);
+      return metadata;
+    },
+    enabled: !!nftContract && tokenId != null,
+    staleTime: METADATA_STALE_TIME,
+    gcTime: METADATA_STALE_TIME,
+    retry: 2,
+  });
+}
+
+/**
+ * Batch metadata hook — fetches tokenURI for multiple tokens in a single
+ * Multicall3 request, then resolves all metadata JSON in parallel.
+ * Results are seeded into the single-token query cache so individual
+ * useNftMetadata calls don't re-fetch.
+ */
+export interface BatchToken {
+  contractAddress: `0x${string}`;
+  tokenId: bigint;
+  isERC1155?: boolean;
+}
+
+export function useBatchNftMetadata(tokens: BatchToken[]) {
+  const { browseChainId } = useBrowseChain();
+  const { getEffectiveRpc } = useRpc();
+  const queryClient = useQueryClient();
+
+  return useQuery({
+    queryKey: [
+      "batch-nft-metadata",
+      browseChainId,
+      tokens.map((t) => `${t.contractAddress}:${t.tokenId}`).join(","),
+    ],
+    queryFn: async (): Promise<Map<string, NftMetadata>> => {
+      const results = new Map<string, NftMetadata>();
+      if (tokens.length === 0) return results;
+
+      const userRpc = getEffectiveRpc(browseChainId);
+
+      // Check IndexedDB cache first for all tokens
+      const uncached: { index: number; token: BatchToken; cacheKey: string }[] = [];
+      for (let i = 0; i < tokens.length; i++) {
+        const t = tokens[i];
+        const key = metadataCacheKey(browseChainId, t.contractAddress, t.tokenId.toString());
+        const cached = await getFromCache<NftMetadata>(key);
+        if (cached) {
+          results.set(`${t.contractAddress}:${t.tokenId}`, cached);
+          // Seed single-token cache
+          queryClient.setQueryData(
+            ["nft-metadata", browseChainId, t.contractAddress, t.tokenId.toString()],
+            cached
+          );
+        } else {
+          uncached.push({ index: i, token: t, cacheKey: key });
+        }
+      }
+
+      if (uncached.length === 0) return results;
+
+      // Batch tokenURI calls via Multicall3
+      const calls: MulticallRequest[] = uncached.map(({ token }) =>
+        encodeCall(
+          token.contractAddress,
+          TOKEN_URI_ABI,
+          token.isERC1155 ? "uri" : "tokenURI",
+          [token.tokenId]
+        )
+      );
+
+      const pool = createRpcPool(browseChainId, userRpc);
+      const batchResults = await executeBatchedMulticalls(pool, calls);
+      const flat = batchResults.flat();
+
+      // Resolve metadata JSON in parallel (IPFS/HTTP fetches)
+      const resolvePromises = uncached.map(async ({ token, cacheKey }, i) => {
+        const entry = flat[i];
+        if (!entry || !entry.success) return;
+
+        const funcName = token.isERC1155 ? "uri" : "tokenURI";
+        const uri = decodeResult<string>(TOKEN_URI_ABI, funcName, entry);
+        if (!uri) return;
+
+        try {
+          const metadata = await resolveMetadata(uri, token.tokenId);
+          await setInCache(cacheKey, metadata);
+
+          const mapKey = `${token.contractAddress}:${token.tokenId}`;
+          results.set(mapKey, metadata);
+
+          // Seed single-token cache
+          queryClient.setQueryData(
+            ["nft-metadata", browseChainId, token.contractAddress, token.tokenId.toString()],
+            metadata
+          );
+        } catch {
+          // Metadata resolve failed — skip this token
+        }
+      });
+
+      await Promise.allSettled(resolvePromises);
+      return results;
+    },
+    enabled: tokens.length > 0,
+    staleTime: METADATA_STALE_TIME,
+    gcTime: METADATA_STALE_TIME,
+  });
+}

@@ -1,0 +1,818 @@
+"use client";
+
+import { useParams } from "next/navigation";
+import { useState } from "react";
+import { useAccount } from "wagmi";
+import { useCollectionListings } from "@/hooks/useListings";
+import { useCollectionBids, useCollectionOffers } from "@/hooks/useBids";
+import { useCollectionNfts } from "@/hooks/useWalletNfts";
+import { useCollectionInfo } from "@/hooks/useCollectionInfo";
+import { useCollectionTokens } from "@/hooks/useCollectionTokens";
+import { useCollectionTokensByIds } from "@/hooks/useCollectionTokensByIds";
+import { useNftMetadata, useBatchNftMetadata } from "@/hooks/useNftMetadata";
+import { useRegisteredCollectionByNft } from "@/hooks/useRegistry";
+import { useEvmfsTokenMetadata } from "@/hooks/useEvmfsMetadata";
+import { useTokenViewerUri } from "@/hooks/useTokenViewerUri";
+import { useIndexManifest } from "@/hooks/useIndexManifest";
+import { NftGrid } from "@/components/nft/NftGrid";
+import { NftCard } from "@/components/nft/NftCard";
+import { NftImage } from "@/components/nft/NftImage";
+import { EvmfsTokenCard } from "@/components/collection/EvmfsTokenCard";
+import { OnChainVerifyPanel } from "@/components/collection/OnChainVerifyPanel";
+import {
+  TraitFilter,
+  filterIdsBySelection,
+  type TraitSelection,
+} from "@/components/collection/TraitFilter";
+import { evmfsLabel, type EvmfsContract } from "@/lib/evmfs";
+import { Spinner } from "@/components/ui/Spinner";
+import { Button } from "@/components/ui/Button";
+import { BuyButton } from "@/components/marketplace/BuyButton";
+import { ListItemModal } from "@/components/marketplace/ListItemModal";
+import { PlaceBidModal } from "@/components/marketplace/PlaceBidModal";
+import { CollectionOfferModal } from "@/components/marketplace/CollectionOfferModal";
+import {
+  CancelListingButton,
+  CancelBidButton,
+  AcceptBidButton,
+  CancelOfferButton,
+  AcceptCollectionOfferButton,
+} from "@/components/marketplace/ActionButtons";
+import { formatPrice, truncateAddress, timeAgo } from "@/lib/format";
+import { PAGE_SIZE } from "@/config/constants";
+import { MINTI_MARKETPLACE_ADDRESS, getNativeSymbol } from "@/config/chains";
+import { useBrowseChain } from "@/providers/ChainProvider";
+import { useReadContract } from "wagmi";
+import { isAddress } from "viem";
+import mintiAbi from "@/lib/abi/MintiMarketplace.json";
+
+export function CollectionCatchAll() {
+  const params = useParams();
+  const slug = params?.slug as string[] | undefined;
+
+  if (!slug || slug.length === 0) {
+    return (
+      <div className="max-w-7xl mx-auto px-4 py-20 text-center text-foreground-secondary">
+        <p>Enter a collection address in the URL to view it.</p>
+        <p className="text-sm mt-2">/collection/0x...</p>
+      </div>
+    );
+  }
+
+  if (!isAddress(slug[0])) {
+    return (
+      <div className="max-w-7xl mx-auto px-4 py-20 text-center text-foreground-secondary">
+        <p>Invalid contract address.</p>
+        <p className="text-sm mt-2">Please enter a valid Ethereum address (0x...)</p>
+      </div>
+    );
+  }
+
+  const collectionAddress = slug[0] as `0x${string}`;
+
+  if (slug.length >= 2) {
+    // Validate tokenId is a valid number
+    let tokenId: string;
+    try {
+      BigInt(slug[1]);
+      tokenId = slug[1];
+    } catch {
+      return (
+        <div className="max-w-7xl mx-auto px-4 py-20 text-center text-foreground-secondary">
+          <p>Invalid token ID.</p>
+        </div>
+      );
+    }
+    return (
+      <TokenDetailPage
+        collectionAddress={collectionAddress}
+        tokenId={tokenId}
+      />
+    );
+  }
+
+  return <CollectionPage collectionAddress={collectionAddress} />;
+}
+
+// ═══════════════════════════ COLLECTION PAGE ═══════════════════════════
+
+type CollectionTab = "browse" | "listings";
+
+function CollectionPage({
+  collectionAddress,
+}: {
+  collectionAddress: `0x${string}`;
+}) {
+  const { address } = useAccount();
+  const [tab, setTab] = useState<CollectionTab>("browse");
+  const [browsePage, setBrowsePage] = useState(0);
+  const [listingPage, setListingPage] = useState(0);
+  const [showOfferModal, setShowOfferModal] = useState(false);
+  const [traitSelection, setTraitSelection] = useState<TraitSelection>({});
+  const { data: listingData, isLoading: listingsLoading } = useCollectionListings(collectionAddress, listingPage);
+  const { data: offers } = useCollectionOffers(collectionAddress);
+  const { data: collectionInfo } = useCollectionInfo(collectionAddress);
+  const { data: evmfsRecord } = useRegisteredCollectionByNft(collectionAddress);
+  const isEvmfs = !!evmfsRecord;
+  const hasIndexManifest =
+    isEvmfs &&
+    evmfsRecord!.indexManifest !==
+      "0x0000000000000000000000000000000000000000000000000000000000000000";
+  const { data: indexManifest } = useIndexManifest(
+    hasIndexManifest ? evmfsRecord!.indexManifest : undefined,
+    hasIndexManifest ? evmfsRecord!.indexBlock : undefined,
+    hasIndexManifest ? (evmfsRecord!.evmfsContract as EvmfsContract) : undefined,
+  );
+
+  const activeFilterCount = Object.values(traitSelection).reduce(
+    (n, s) => n + s.size,
+    0,
+  );
+  const filteredIds = indexManifest && activeFilterCount > 0
+    ? filterIdsBySelection(indexManifest, traitSelection)
+    : null;
+
+  const filterPageSize = 24;
+  const filteredPageIds =
+    filteredIds !== null
+      ? filteredIds.slice(browsePage * filterPageSize, (browsePage + 1) * filterPageSize)
+      : [];
+  const { data: filteredTokenRows = [], isLoading: filteredLoading } =
+    useCollectionTokensByIds(
+      filteredIds !== null ? collectionAddress : undefined,
+      filteredPageIds,
+    );
+
+  const {
+    tokens: defaultBrowseTokens,
+    totalSupply,
+    totalPages: defaultTotalPages,
+    isLoading: defaultBrowseLoading,
+  } = useCollectionTokens(collectionAddress, filteredIds !== null ? 0 : browsePage);
+
+  const browseTokens = filteredIds !== null ? filteredTokenRows : defaultBrowseTokens;
+  const browseLoading = filteredIds !== null ? filteredLoading : defaultBrowseLoading;
+  const browseTotalPages =
+    filteredIds !== null
+      ? Math.max(1, Math.ceil(filteredIds.length / filterPageSize))
+      : defaultTotalPages;
+
+  // Batch-fetch metadata for browse tokens
+  const batchTokens = browseTokens.map((t) => ({
+    contractAddress: collectionAddress,
+    tokenId: t.tokenId,
+  }));
+  const { data: metadataMap } = useBatchNftMetadata(batchTokens);
+
+  const {
+    tokens: ownedDiscovered,
+    balanceOnly: hasBalanceOnly,
+    isLoading: scanLoading,
+    error: scanError,
+  } = useCollectionNfts(address, address ? collectionAddress : undefined);
+
+  const listings = listingData?.listings || [];
+  const listingTotal = listingData?.total || 0;
+  const listingTotalPages = Math.ceil(listingTotal / PAGE_SIZE);
+  const collectionName = collectionInfo?.name || truncateAddress(collectionAddress, 8);
+
+  return (
+    <div className="max-w-7xl mx-auto px-4 py-8">
+      <div className="mb-8 flex items-start justify-between">
+        <div className="flex items-center gap-4">
+          <div className="w-14 h-14 rounded-xl overflow-hidden border border-border flex-shrink-0 bg-background-secondary">
+            {collectionInfo?.iconUrl ? (
+              <NftImage
+                src={collectionInfo.iconUrl}
+                alt={collectionName}
+                className="w-14 h-14"
+              />
+            ) : (
+              <div className="w-14 h-14 flex items-center justify-center text-sm text-foreground-secondary font-mono">
+                {collectionAddress.slice(2, 6)}
+              </div>
+            )}
+          </div>
+          <div>
+            <h1 className="text-2xl font-bold mb-1 flex items-center gap-2">
+              {isEvmfs ? evmfsRecord!.name : collectionName}
+              {evmfsRecord?.verified && (
+                <span
+                  className="text-mint"
+                  title="Verified by minti"
+                  aria-label="Verified"
+                >
+                  ✓
+                </span>
+              )}
+              {(isEvmfs ? evmfsRecord!.symbol : collectionInfo?.symbol) && (
+                <span className="text-sm text-foreground-secondary font-normal">
+                  {isEvmfs ? evmfsRecord!.symbol : collectionInfo!.symbol}
+                </span>
+              )}
+              {isEvmfs && (
+                <>
+                  <span className="text-[10px] uppercase tracking-wider text-mint border border-mint/30 rounded px-1.5 py-0.5">
+                    100% on-chain
+                  </span>
+                  <span className="text-[10px] uppercase tracking-wider text-foreground-secondary/70 border border-border rounded px-1 py-0.5">
+                    {evmfsLabel(evmfsRecord!.evmfsContract)}
+                  </span>
+                </>
+              )}
+            </h1>
+            <p className="text-xs text-foreground-secondary font-mono">
+              {truncateAddress(collectionAddress, 8)}
+              {totalSupply > 0 && (
+                <span className="ml-2">&middot; {totalSupply.toLocaleString()} items</span>
+              )}
+              {isEvmfs && (
+                <span className="ml-2">
+                  &middot; by {truncateAddress(evmfsRecord!.creator)}
+                </span>
+              )}
+            </p>
+          </div>
+        </div>
+        <div className="text-right space-y-2">
+          <p className="text-sm text-foreground-secondary">
+            {listingTotal} listed
+            {offers && offers.length > 0 && (
+              <span>
+                {" "}&middot; {offers.length} offer{offers.length !== 1 ? "s" : ""}
+              </span>
+            )}
+          </p>
+          {address && (
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => setShowOfferModal(true)}
+            >
+              Collection Offer
+            </Button>
+          )}
+        </div>
+      </div>
+
+      {offers && offers.length > 0 && (
+        <div className="mb-8 border border-border rounded-xl p-4 bg-background-secondary">
+          <h3 className="text-sm font-medium mb-3">Collection Offers</h3>
+          <div className="space-y-2">
+            {offers.slice(0, 5).map((offer) => (
+              <div
+                key={offer.offerId.toString()}
+                className="flex items-center justify-between text-sm"
+              >
+                <span className="text-foreground-secondary">
+                  {truncateAddress(offer.bidder)}
+                </span>
+                <div className="flex items-center gap-3">
+                  <span>
+                    <span className="text-mint font-medium">
+                      {formatPrice(offer.amount)}
+                    </span>{" "}
+                    <span className="text-foreground-secondary">
+                      WETH &times;{" "}
+                      {(offer.quantity - offer.fulfilled).toString()}
+                    </span>
+                  </span>
+                  {address?.toLowerCase() === offer.bidder.toLowerCase() && (
+                    <CancelOfferButton offerId={offer.offerId} />
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Your Items */}
+      {address && scanError && (
+        <div className="mb-6 px-4 py-3 border border-danger/30 rounded-lg bg-danger/5 text-sm text-danger">
+          Failed to scan your NFTs: {scanError.message}
+        </div>
+      )}
+      {address && scanLoading && (
+        <div className="mb-6 flex items-center gap-2 text-sm text-foreground-secondary">
+          <Spinner size="sm" /> Scanning for your NFTs in this collection...
+        </div>
+      )}
+      {address && ownedDiscovered.length > 0 && (
+        <div className="mb-8">
+          <h3 className="text-sm font-medium mb-3">
+            Your Items ({ownedDiscovered.length}
+            {hasBalanceOnly && ownedDiscovered.length > 0 ? "+" : ""})
+          </h3>
+          <NftGrid loading={false} empty={false}>
+            {ownedDiscovered.map((token) => (
+              <OwnedCollectionCard
+                key={`owned-${token.contractAddress}-${token.tokenId}`}
+                contractAddress={token.contractAddress}
+                tokenId={token.tokenId}
+              />
+            ))}
+          </NftGrid>
+        </div>
+      )}
+
+      {/* Tabs: Browse All / Listings */}
+      <div className="flex gap-6 border-b border-border mb-6">
+        <button
+          onClick={() => setTab("browse")}
+          className={`pb-3 text-sm font-medium transition-colors ${
+            tab === "browse"
+              ? "text-mint border-b-2 border-mint"
+              : "text-foreground-secondary hover:text-foreground"
+          }`}
+        >
+          Browse All
+        </button>
+        <button
+          onClick={() => setTab("listings")}
+          className={`pb-3 text-sm font-medium transition-colors ${
+            tab === "listings"
+              ? "text-mint border-b-2 border-mint"
+              : "text-foreground-secondary hover:text-foreground"
+          }`}
+        >
+          Listings ({listingTotal})
+        </button>
+      </div>
+
+      {/* Browse All tab */}
+      {tab === "browse" && (
+        <div className="flex flex-col md:flex-row gap-6">
+          {indexManifest && (
+            <TraitFilter
+              manifest={indexManifest}
+              selected={traitSelection}
+              onChange={(next) => {
+                setTraitSelection(next);
+                setBrowsePage(0);
+              }}
+            />
+          )}
+          <div className="flex-1 min-w-0">
+            {filteredIds !== null && (
+              <div className="mb-4 text-xs text-foreground-secondary">
+                {filteredIds.length.toLocaleString()} match
+                {filteredIds.length === 1 ? "" : "es"} for current filters
+              </div>
+            )}
+            <NftGrid
+              loading={browseLoading}
+              empty={!browseLoading && browseTokens.length === 0}
+              emptyMessage={
+                filteredIds !== null
+                  ? "No tokens match the selected traits"
+                  : "No tokens found in this collection"
+              }
+            >
+              {browseTokens.map((token) =>
+                isEvmfs ? (
+                  <EvmfsTokenCard
+                    key={token.tokenId.toString()}
+                    contractAddress={collectionAddress}
+                    tokenId={token.tokenId}
+                    metadataManifest={evmfsRecord!.metadataManifest}
+                    metadataBlock={evmfsRecord!.metadataBlock}
+                    evmfsContract={evmfsRecord!.evmfsContract as EvmfsContract}
+                    seller={token.owner !== address?.toLowerCase() ? token.owner : undefined}
+                  />
+                ) : (
+                  <NftCard
+                    key={token.tokenId.toString()}
+                    contractAddress={collectionAddress}
+                    tokenId={token.tokenId.toString()}
+                    metadata={metadataMap?.get(`${collectionAddress}:${token.tokenId}`)}
+                    seller={token.owner !== address?.toLowerCase() ? token.owner : undefined}
+                  />
+                ),
+              )}
+            </NftGrid>
+
+            {browseTotalPages > 1 && (
+              <div className="flex items-center justify-center gap-3 mt-8">
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  disabled={browsePage === 0}
+                  onClick={() => setBrowsePage((p) => p - 1)}
+                >
+                  Previous
+                </Button>
+                <span className="text-sm text-foreground-secondary">
+                  Page {browsePage + 1} of {browseTotalPages}
+                </span>
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  disabled={browsePage >= browseTotalPages - 1}
+                  onClick={() => setBrowsePage((p) => p + 1)}
+                >
+                  Next
+                </Button>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Listings tab */}
+      {tab === "listings" && (
+        <>
+          <NftGrid
+            loading={listingsLoading}
+            empty={!listingsLoading && listings.length === 0}
+            emptyMessage="No active listings for this collection"
+          >
+            {listings.map((listing) => (
+              <ListingCardWithMetadata
+                key={listing.listingId.toString()}
+                nftContract={listing.nftContract}
+                tokenId={listing.tokenId}
+                price={listing.price}
+                seller={listing.seller}
+                isERC1155={listing.isERC1155}
+              />
+            ))}
+          </NftGrid>
+
+          {listingTotalPages > 1 && (
+            <div className="flex items-center justify-center gap-3 mt-8">
+              <Button
+                variant="secondary"
+                size="sm"
+                disabled={listingPage === 0}
+                onClick={() => setListingPage((p) => p - 1)}
+              >
+                Previous
+              </Button>
+              <span className="text-sm text-foreground-secondary">
+                Page {listingPage + 1} of {listingTotalPages}
+              </span>
+              <Button
+                variant="secondary"
+                size="sm"
+                disabled={listingPage >= listingTotalPages - 1}
+                onClick={() => setListingPage((p) => p + 1)}
+              >
+                Next
+              </Button>
+            </div>
+          )}
+        </>
+      )}
+
+      <CollectionOfferModal
+        isOpen={showOfferModal}
+        onClose={() => setShowOfferModal(false)}
+        nftContract={collectionAddress}
+      />
+    </div>
+  );
+}
+
+// ═══════════════════════════ TOKEN DETAIL PAGE ═══════════════════════════
+
+function TokenDetailPage({
+  collectionAddress,
+  tokenId,
+}: {
+  collectionAddress: `0x${string}`;
+  tokenId: string;
+}) {
+  const { address } = useAccount();
+  const { browseChainId } = useBrowseChain();
+  const symbol = getNativeSymbol(browseChainId);
+  const tokenIdBigInt = BigInt(tokenId);
+  const { data: evmfsRecord } = useRegisteredCollectionByNft(collectionAddress);
+  const isEvmfs = !!evmfsRecord;
+  const { data: evmfsMetadata } = useEvmfsTokenMetadata(
+    evmfsRecord?.metadataManifest,
+    evmfsRecord?.metadataBlock,
+    isEvmfs ? tokenIdBigInt : undefined,
+    evmfsRecord?.evmfsContract as EvmfsContract | undefined
+  );
+  const { data: viewerUri } = useTokenViewerUri(
+    evmfsRecord?.metadataManifest,
+    evmfsRecord?.metadataBlock,
+    isEvmfs ? tokenIdBigInt : undefined
+  );
+  const { data: legacyMetadata, isLoading: legacyLoading } = useNftMetadata(
+    collectionAddress,
+    isEvmfs ? undefined : tokenIdBigInt
+  );
+  const metadata = isEvmfs ? evmfsMetadata : legacyMetadata;
+  const isLoading = isEvmfs ? !evmfsMetadata && !viewerUri : legacyLoading;
+  const { data: bids } = useCollectionBids(collectionAddress);
+  const { data: offers } = useCollectionOffers(collectionAddress);
+
+  const [showListModal, setShowListModal] = useState(false);
+  const [showBidModal, setShowBidModal] = useState(false);
+
+  const tokenBids =
+    bids?.filter((b) => b.tokenId.toString() === tokenId) || [];
+
+  // Check if this token has an active listing
+  const { data: activeListingId } = useReadContract({
+    address: MINTI_MARKETPLACE_ADDRESS,
+    abi: mintiAbi,
+    functionName: "getActiveListingId",
+    args: address ? [collectionAddress, tokenIdBigInt, address] : undefined,
+    query: { enabled: !!address },
+  });
+
+  // Fetch listing details if active
+  const hasListing = activeListingId && (activeListingId as bigint) > 0n;
+
+  // Find listing in collection listings for this token (from any seller)
+  const { data: collectionData } = useCollectionListings(collectionAddress, 0);
+  const tokenListing = collectionData?.listings.find(
+    (l) => l.tokenId.toString() === tokenId
+  );
+
+  return (
+    <div className="max-w-7xl mx-auto px-4 py-8">
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+        <div className="rounded-xl overflow-hidden border border-border">
+          {isLoading ? (
+            <div className="aspect-square flex items-center justify-center bg-background-secondary">
+              <Spinner size="lg" />
+            </div>
+          ) : isEvmfs && viewerUri ? (
+            <iframe
+              src={viewerUri}
+              title={metadata?.name || `Token #${tokenId}`}
+              sandbox="allow-scripts"
+              className="w-full aspect-square border-0 bg-background-secondary"
+            />
+          ) : (
+            <NftImage
+              src={metadata?.image || ""}
+              rawUri={
+                isEvmfs ? undefined : (legacyMetadata as { rawImageUri?: string } | undefined)?.rawImageUri
+              }
+              alt={metadata?.name || `#${tokenId}`}
+              className="aspect-square"
+            />
+          )}
+        </div>
+
+        <div className="space-y-6">
+          <div>
+            <a
+              href={`/collection/${collectionAddress}`}
+              className="text-sm text-mint hover:underline"
+            >
+              {truncateAddress(collectionAddress, 8)}
+            </a>
+            <h1 className="text-3xl font-bold mt-1">
+              {metadata?.name || `#${tokenId}`}
+            </h1>
+            {metadata?.description && (
+              <p className="text-foreground-secondary mt-2 text-sm">
+                {metadata.description}
+              </p>
+            )}
+          </div>
+
+          {isEvmfs && evmfsRecord && (
+            <OnChainVerifyPanel
+              metadataManifest={evmfsRecord.metadataManifest}
+              metadataBlock={evmfsRecord.metadataBlock}
+              evmfsContract={evmfsRecord.evmfsContract as EvmfsContract}
+              tokenId={tokenIdBigInt}
+            />
+          )}
+
+          {/* Action Buttons */}
+          {tokenListing && (
+            <div className="border border-border rounded-xl p-4 bg-background-secondary space-y-3">
+              <div className="flex justify-between text-sm">
+                <span className="text-foreground-secondary">Listed by</span>
+                <span>{truncateAddress(tokenListing.seller)}</span>
+              </div>
+              <div className="flex justify-between text-sm">
+                <span className="text-foreground-secondary">Price</span>
+                <span className="text-mint font-medium">
+                  {formatPrice(tokenListing.price)} {symbol}
+                </span>
+              </div>
+
+              {address?.toLowerCase() === tokenListing.seller.toLowerCase() ? (
+                <CancelListingButton listingId={tokenListing.listingId} />
+              ) : (
+                <BuyButton
+                  listingId={tokenListing.listingId}
+                  price={tokenListing.price}
+                  seller={tokenListing.seller}
+                  currentUserAddress={address}
+                />
+              )}
+            </div>
+          )}
+
+          {/* User actions: list / bid */}
+          {address && (
+            <div className="flex gap-2">
+              {!hasListing && (
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => setShowListModal(true)}
+                >
+                  List for Sale
+                </Button>
+              )}
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => setShowBidModal(true)}
+              >
+                Place Bid
+              </Button>
+            </div>
+          )}
+
+          {/* Traits */}
+          {metadata?.attributes && metadata.attributes.length > 0 && (
+            <div>
+              <h3 className="text-sm font-medium mb-3">Traits</h3>
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                {metadata.attributes.map((attr, i) => (
+                  <div
+                    key={i}
+                    className="border border-border rounded-lg p-2 bg-background-secondary"
+                  >
+                    <div className="text-xs text-mint uppercase">
+                      {attr.trait_type}
+                    </div>
+                    <div className="text-sm font-medium truncate">
+                      {String(attr.value)}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Bids */}
+          {tokenBids.length > 0 && (
+            <div>
+              <h3 className="text-sm font-medium mb-3">
+                Bids ({tokenBids.length})
+              </h3>
+              <div className="border border-border rounded-xl overflow-hidden">
+                {tokenBids.map((bid) => (
+                  <div
+                    key={bid.bidId.toString()}
+                    className="flex items-center justify-between px-4 py-3 border-b border-border last:border-b-0"
+                  >
+                    <div>
+                      <span className="text-sm text-foreground-secondary">
+                        {truncateAddress(bid.bidder)}
+                      </span>
+                      <span className="text-xs text-foreground-secondary/50 ml-2">
+                        {timeAgo(bid.timestamp)}
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-3">
+                      <div className="text-sm">
+                        <span className="text-mint font-medium">
+                          {formatPrice(bid.amount)}
+                        </span>
+                        <span className="text-foreground-secondary ml-1">
+                          WETH
+                        </span>
+                      </div>
+                      {address?.toLowerCase() === bid.bidder.toLowerCase() && (
+                        <CancelBidButton bidId={bid.bidId} />
+                      )}
+                      {tokenListing &&
+                        address?.toLowerCase() ===
+                          tokenListing.seller.toLowerCase() && (
+                          <AcceptBidButton bidId={bid.bidId} />
+                        )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Collection Offers */}
+          {offers && offers.length > 0 && (
+            <div>
+              <h3 className="text-sm font-medium mb-3">
+                Collection Offers ({offers.length})
+              </h3>
+              <div className="border border-border rounded-xl overflow-hidden">
+                {offers.slice(0, 5).map((offer) => (
+                  <div
+                    key={offer.offerId.toString()}
+                    className="flex items-center justify-between px-4 py-3 border-b border-border last:border-b-0"
+                  >
+                    <div>
+                      <span className="text-sm text-foreground-secondary">
+                        {truncateAddress(offer.bidder)}
+                      </span>
+                      <span className="text-xs text-foreground-secondary/50 ml-2">
+                        {timeAgo(offer.timestamp)}
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-3">
+                      <div className="text-sm">
+                        <span className="text-mint font-medium">
+                          {formatPrice(offer.amount)}
+                        </span>
+                        <span className="text-foreground-secondary ml-1">
+                          WETH &times;{" "}
+                          {(offer.quantity - offer.fulfilled).toString()}
+                        </span>
+                      </div>
+                      {address?.toLowerCase() ===
+                        offer.bidder.toLowerCase() && (
+                        <CancelOfferButton offerId={offer.offerId} />
+                      )}
+                      {address &&
+                        address.toLowerCase() !==
+                          offer.bidder.toLowerCase() && (
+                          <AcceptCollectionOfferButton
+                            offerId={offer.offerId}
+                            tokenId={tokenIdBigInt}
+                          />
+                        )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+
+      <ListItemModal
+        isOpen={showListModal}
+        onClose={() => setShowListModal(false)}
+        nftContract={collectionAddress}
+        tokenId={tokenIdBigInt}
+        tokenName={metadata?.name}
+      />
+
+      <PlaceBidModal
+        isOpen={showBidModal}
+        onClose={() => setShowBidModal(false)}
+        nftContract={collectionAddress}
+        tokenId={tokenIdBigInt}
+        tokenName={metadata?.name}
+      />
+    </div>
+  );
+}
+
+// ═══════════════════════════ SHARED ═══════════════════════════
+
+function OwnedCollectionCard({
+  contractAddress,
+  tokenId,
+}: {
+  contractAddress: `0x${string}`;
+  tokenId: bigint;
+}) {
+  const { data: metadata } = useNftMetadata(contractAddress, tokenId);
+  return (
+    <NftCard
+      contractAddress={contractAddress}
+      tokenId={tokenId.toString()}
+      metadata={metadata}
+    />
+  );
+}
+
+function ListingCardWithMetadata({
+  nftContract,
+  tokenId,
+  price,
+  seller,
+  isERC1155,
+}: {
+  nftContract: `0x${string}`;
+  tokenId: bigint;
+  price: bigint;
+  seller: string;
+  isERC1155: boolean;
+}) {
+  const { data: metadata } = useNftMetadata(nftContract, tokenId, isERC1155);
+
+  return (
+    <NftCard
+      contractAddress={nftContract}
+      tokenId={tokenId.toString()}
+      metadata={metadata}
+      price={price}
+      seller={seller}
+    />
+  );
+}

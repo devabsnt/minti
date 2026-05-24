@@ -1,0 +1,61 @@
+# ── markdown ─────────────────────────────────────────────────
+# Personal planning + working docs aren't committed. README.md files
+# (per-folder docs) are an explicit exception.
+*.md
+!README.md
+!**/README.md
+
+# ── env / secrets ─────────────────────────────────────────────
+.env
+.env.*
+*.env
+
+# ── standalone projects not part of the marketplace ───────────
+# mintiNFT is the Baolings generator/flagship collection project; lives
+# alongside the marketplace repo but isn't part of it.
+mintiNFT/
+
+# ── deps + build ──────────────────────────────────────────────
+node_modules/
+.pnp
+.pnp.*
+*.tsbuildinfo
+.npm/
+
+# ── Next.js ───────────────────────────────────────────────────
+frontend/.next/
+frontend/out/
+frontend/build/
+
+# ── Foundry / contracts ───────────────────────────────────────
+contracts/out/
+contracts/cache/
+contracts/broadcast/
+contracts/.cache/
+contracts/lib/
+
+# ── wrangler / Cloudflare ─────────────────────────────────────
+.wrangler/
+cloudflare-worker/node_modules/
+
+# ── editor / OS ───────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+.idea/
+.vscode/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+
+# ── logs ──────────────────────────────────────────────────────
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+.next-debug.log
+
+# ── claude / agent state ──────────────────────────────────────
+.claude/

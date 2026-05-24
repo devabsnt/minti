@@ -1,0 +1,11 @@
+{
+  "name": "minti-scripts",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build-index": "node build-collections-index.mjs"
+  },
+  "dependencies": {
+    "viem": "^2.46.3"
+  }
+}
