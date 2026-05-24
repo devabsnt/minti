@@ -6,7 +6,7 @@ name: Build collections index
 
 on:
   schedule:
-    - cron: "0 6 * * 1" # Mondays 06:00 UTC
+    - cron: "0 6 * * *" # Daily 06:00 UTC — only the delta since last run
   workflow_dispatch:
     inputs:
       force_full_rescan:
