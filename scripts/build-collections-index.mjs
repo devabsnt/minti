@@ -98,20 +98,47 @@ const ABI = [
 ];
 
 // ── 1. Hypersync sweep ────────────────────────────────────────────
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * POST to Hypersync with automatic retry on 429 + 5xx. Honors Retry-After
+ * header when set; otherwise uses exponential backoff capped at 30s. After
+ * MAX_RETRIES exhausted the original error propagates.
+ */
+const MAX_RETRIES = 8;
 async function hypersync(body) {
-  const resp = await fetch(`${HYPERSYNC_URL}/query`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${HYPERSYNC_TOKEN}`,
-    },
-    body: JSON.stringify(body),
-  });
-  if (!resp.ok) {
+  let lastErr = null;
+  for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+    const resp = await fetch(`${HYPERSYNC_URL}/query`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${HYPERSYNC_TOKEN}`,
+      },
+      body: JSON.stringify(body),
+    });
+
+    if (resp.ok) return resp.json();
+
     const text = await resp.text().catch(() => "");
-    throw new Error(`Hypersync ${resp.status}: ${text.slice(0, 200)}`);
+    const retriable = resp.status === 429 || (resp.status >= 500 && resp.status < 600);
+    if (!retriable) {
+      throw new Error(`Hypersync ${resp.status}: ${text.slice(0, 200)}`);
+    }
+
+    // Backoff: honor Retry-After if present, else exponential
+    const retryAfter = resp.headers.get("retry-after");
+    const fromHeader = retryAfter ? Number(retryAfter) : NaN;
+    const waitSec = Number.isFinite(fromHeader)
+      ? Math.max(1, fromHeader)
+      : Math.min(30, 2 ** attempt);
+    console.log(
+      `  Hypersync ${resp.status} — waiting ${waitSec}s (attempt ${attempt + 1}/${MAX_RETRIES})`,
+    );
+    await sleep(waitSec * 1000);
+    lastErr = new Error(`Hypersync ${resp.status}: ${text.slice(0, 200)}`);
   }
-  return resp.json();
+  throw lastErr ?? new Error("Hypersync exhausted retries");
 }
 
 async function discoverErc721Contracts() {
@@ -166,6 +193,10 @@ async function discoverErc721Contracts() {
       console.log(`  Stopping early at MAX_BLOCKS=${MAX_BLOCKS}`);
       break;
     }
+
+    // Stay polite under Envio's per-token rate limit — at ~5 req/s we never
+    // hit a 429 in practice. Retry logic above covers bursts anyway.
+    await sleep(200);
   }
 
   console.log(`Hypersync done: ${contracts.size} ERC-721 contracts in ${queries} queries`);
