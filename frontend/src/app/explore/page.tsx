@@ -5,6 +5,9 @@ import { useRouter } from "next/navigation";
 import { isAddress } from "viem";
 
 import { CollectionCard } from "@/components/collection/CollectionCard";
+import { NftImage } from "@/components/nft/NftImage";
+import { formatNumber, formatCompact } from "@/lib/format";
+import { useNftMetadata } from "@/hooks/useNftMetadata";
 import { NftGrid } from "@/components/nft/NftGrid";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
@@ -95,7 +98,7 @@ export default function ExplorePage() {
             )}
             {indexData && (
               <span className="ml-1">
-                · {indexData.collections.length.toLocaleString()} discovered
+                · {formatNumber(indexData.collections.length)} discovered
               </span>
             )}
           </p>
@@ -113,21 +116,13 @@ export default function ExplorePage() {
         </div>
       </div>
 
-      {!registryLive ? (
-        <div className="border border-border rounded-xl bg-background-secondary p-10 text-center">
-          <p className="text-foreground-secondary mb-4">
-            The EVMFS collection registry isn&apos;t deployed on{" "}
-            {CHAIN_NAMES[browseChainId]} yet.
-          </p>
-          <p className="text-xs text-foreground-secondary">
-            Switch chains, or run the Foundry deploy script and update{" "}
-            <code>EVMFS_COLLECTION_REGISTRY</code> in{" "}
-            <code>lib/evmfs/addresses.ts</code>.
-          </p>
-        </div>
-      ) : (
-        <div className="space-y-10">
-          {/* ── Verified tier ───────────────────────────────────── */}
+      <div className="space-y-10">
+        {/* ── Verified tier ─────────────────────────────────────
+         *  Only renders the section header + grid when the registry
+         *  is actually deployed. Otherwise show a small inline notice
+         *  so users on a chain without a registry deployment still
+         *  see the long-tail tier below. */}
+        {registryLive ? (
           <section>
             <h2 className="text-sm font-medium uppercase tracking-wide text-foreground-secondary mb-3">
               Verified
@@ -173,40 +168,44 @@ export default function ExplorePage() {
               </div>
             )}
           </section>
+        ) : (
+          <div className="text-xs text-foreground-secondary border border-border rounded-lg bg-background-secondary px-3 py-2">
+            Registry not deployed on {CHAIN_NAMES[browseChainId]} yet — verified collections will appear here once it is.
+          </div>
+        )}
 
-          {/* ── Long-tail / discovered ──────────────────────────── */}
-          {snapshotAvailable && (
-            <section>
-              <h2 className="text-sm font-medium uppercase tracking-wide text-foreground-secondary mb-3">
-                All collections
-                {longTail.length > 0 && (
-                  <span className="ml-2 text-xs">{longTail.length}</span>
-                )}
-                {!indexData && indexLoading && (
-                  <span className="ml-2 text-xs text-foreground-secondary/70">
-                    loading…
-                  </span>
-                )}
-              </h2>
-              {longTail.length > 0 ? (
-                <NftGrid loading={false} empty={false}>
-                  {longTail.map((c) => (
-                    <LongTailCard key={c.address} collection={c} />
-                  ))}
-                </NftGrid>
-              ) : (
-                !indexLoading && (
-                  <div className="text-sm text-foreground-secondary">
-                    {isSearchingByText
-                      ? "No collections in the snapshot match your search."
-                      : "Snapshot loaded, but no extra collections to show."}
-                  </div>
-                )
+        {/* ── Long-tail / discovered ───────────────────────────── */}
+        {snapshotAvailable && (
+          <section>
+            <h2 className="text-sm font-medium uppercase tracking-wide text-foreground-secondary mb-3">
+              All collections
+              {longTail.length > 0 && (
+                <span className="ml-2 text-xs">{longTail.length}</span>
               )}
-            </section>
-          )}
-        </div>
-      )}
+              {!indexData && indexLoading && (
+                <span className="ml-2 text-xs text-foreground-secondary/70">
+                  loading…
+                </span>
+              )}
+            </h2>
+            {longTail.length > 0 ? (
+              <NftGrid loading={false} empty={false}>
+                {longTail.map((c) => (
+                  <LongTailCard key={c.address} collection={c} />
+                ))}
+              </NftGrid>
+            ) : (
+              !indexLoading && (
+                <div className="text-sm text-foreground-secondary">
+                  {isSearchingByText
+                    ? "No collections in the snapshot match your search."
+                    : "Snapshot loaded, but no extra collections to show."}
+                </div>
+              )
+            )}
+          </section>
+        )}
+      </div>
     </div>
   );
 }
@@ -225,31 +224,63 @@ function rankByTier(items: readonly RegisteredCollection[]): RegisteredCollectio
 }
 
 /**
- * Card variant for the "all collections" tier — we have a name+symbol but
- * no icon URL or verified flag. Minimal card that links into /collection.
+ * Card variant for the "all collections" tier. Square thumbnail (lazy-
+ * loaded from the lowest-tokenId NFT's metadata) above name / symbol /
+ * activity badge. Designed to feel like an OpenSea collection tile.
  */
 function LongTailCard({ collection }: { collection: IndexedCollection }) {
   const name = collection.name || collection.address.slice(0, 10);
   const symbol = collection.symbol || "";
+
+  // Pick the lowest-known tokenId from the snapshot as the thumbnail source.
+  // Falls back to "1" then "0" if missing. useNftMetadata only fires when
+  // the tokenId is set.
+  const sampleTokenId =
+    collection.lowestTokenId != null ? BigInt(collection.lowestTokenId) : 1n;
+  const { data: metadata } = useNftMetadata(
+    collection.address as `0x${string}`,
+    sampleTokenId,
+    collection.is1155 && !collection.is721,
+  );
+
+  const transferCount = collection.transferCount ?? 0;
+  const uniqueHolders = collection.uniqueHolders ?? 0;
+
   return (
     <a
       href={`/collection/${collection.address}`}
-      className="block border border-border rounded-xl bg-background-secondary p-4 hover:border-mint/30 transition-all"
+      className="block border border-border rounded-xl overflow-hidden bg-background-secondary hover:border-mint/30 transition-all hover:shadow-lg hover:shadow-mint-glow"
     >
-      <div className="flex flex-col gap-1">
-        <span className="text-sm font-medium truncate">{name}</span>
-        {symbol && (
-          <span className="text-xs text-foreground-secondary truncate">
-            {symbol}
-          </span>
+      <NftImage
+        src={metadata?.image || ""}
+        rawUri={metadata?.rawImageUri}
+        alt={name}
+        className="aspect-square w-full"
+      />
+      <div className="p-3 space-y-1.5">
+        <div className="flex items-baseline justify-between gap-2">
+          <span className="text-sm font-medium truncate">{name}</span>
+          {symbol && (
+            <span className="text-xs text-foreground-secondary flex-shrink-0">
+              {symbol}
+            </span>
+          )}
+        </div>
+        {(transferCount > 0 || uniqueHolders > 0) && (
+          <div className="flex items-center gap-2 text-xs text-foreground-secondary">
+            {uniqueHolders > 0 && (
+              <span>{formatCompact(uniqueHolders)} holders</span>
+            )}
+            {uniqueHolders > 0 && transferCount > 0 && <span>·</span>}
+            {transferCount > 0 && (
+              <span>{formatCompact(transferCount)} trades</span>
+            )}
+          </div>
         )}
-        <span className="text-xs text-foreground-secondary font-mono truncate">
-          {collection.address.slice(0, 10)}…
-        </span>
-        {collection.totalSupply && (
-          <span className="text-xs text-foreground-secondary">
-            {Number(collection.totalSupply).toLocaleString()} items
-          </span>
+        {collection.totalSupply && Number(collection.totalSupply) > 0 && (
+          <div className="text-xs text-foreground-secondary">
+            {formatNumber(collection.totalSupply)} items
+          </div>
         )}
       </div>
     </a>

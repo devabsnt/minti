@@ -171,6 +171,19 @@ function loadPreviousSnapshot() {
   }
 }
 
+/**
+ * Aggregated per-contract stats accumulated during the Hypersync sweep.
+ * These are essentially free to compute — we already iterate every log.
+ */
+function makeStatsBucket() {
+  return {
+    transferCount: 0,
+    holders: new Set(), // distinct lowercased `to` addresses
+    firstBlock: Infinity,
+    lowestTokenId: null, // first tokenId we see for this contract
+  };
+}
+
 async function discoverErc721Contracts(startBlock = 0, knownAddresses = new Set()) {
   console.log(
     `Hypersync: scanning Transfer events from block ${startBlock}` +
@@ -178,7 +191,8 @@ async function discoverErc721Contracts(startBlock = 0, knownAddresses = new Set(
         ? ` (${knownAddresses.size} contracts already known)`
         : ""),
   );
-  const contracts = new Set();
+  // Per-contract running stats, keyed by lowercased address.
+  const stats = new Map();
   let cursor = startBlock;
   let target = 0;
   let queries = 0;
@@ -199,17 +213,32 @@ async function discoverErc721Contracts(startBlock = 0, knownAddresses = new Set(
           ],
         },
       ],
-      field_selection: { log: ["address", "topic3"] },
+      field_selection: { log: ["address", "topic2", "topic3", "block_number"] },
     });
 
     target = result.archive_height;
     for (const batch of result.data || []) {
       for (const log of batch.logs || []) {
         // topic3 presence confirms ERC-721 (not ERC-20)
-        if (log.topic3 && log.address) {
-          const addr = log.address.toLowerCase();
-          // Skip ones we already enriched in a prior run.
-          if (!knownAddresses.has(addr)) contracts.add(addr);
+        if (!log.topic3 || !log.address) continue;
+        const addr = log.address.toLowerCase();
+        // Skip ones we already enriched in a prior run — we still tally
+        // delta stats for known contracts so their numbers stay fresh.
+        let bucket = stats.get(addr);
+        if (!bucket) {
+          bucket = makeStatsBucket();
+          stats.set(addr, bucket);
+        }
+        bucket.transferCount++;
+        // topic2 = `to` (indexed). Padded hex string.
+        if (log.topic2) bucket.holders.add(log.topic2.toLowerCase());
+        // topic3 = tokenId. Track the lowest we've seen.
+        const tid = BigInt(log.topic3);
+        if (bucket.lowestTokenId == null || tid < bucket.lowestTokenId) {
+          bucket.lowestTokenId = tid;
+        }
+        if (log.block_number != null && log.block_number < bucket.firstBlock) {
+          bucket.firstBlock = log.block_number;
         }
       }
     }
@@ -221,7 +250,7 @@ async function discoverErc721Contracts(startBlock = 0, knownAddresses = new Set(
       const pct = target > 0 ? Math.round((cursor / target) * 100) : 0;
       const elapsed = Math.round((Date.now() - startTime) / 1000);
       console.log(
-        `  ${cursor}/${target} blocks (${pct}%), ${contracts.size} contracts, ${elapsed}s elapsed`,
+        `  ${cursor}/${target} blocks (${pct}%), ${stats.size} contracts, ${elapsed}s elapsed`,
       );
     }
 
@@ -236,8 +265,29 @@ async function discoverErc721Contracts(startBlock = 0, knownAddresses = new Set(
     await sleep(200);
   }
 
-  console.log(`Hypersync done: ${contracts.size} ERC-721 contracts in ${queries} queries`);
-  return { contracts: Array.from(contracts), lastBlock: cursor };
+  // Materialise stats into plain objects keyed by address. Holders Set is
+  // dropped — we only care about its size.
+  const statsByAddress = {};
+  for (const [addr, bucket] of stats.entries()) {
+    statsByAddress[addr] = {
+      transferCount: bucket.transferCount,
+      uniqueHolders: bucket.holders.size,
+      firstTransferBlock: bucket.firstBlock === Infinity ? 0 : bucket.firstBlock,
+      lowestTokenId: bucket.lowestTokenId != null ? bucket.lowestTokenId.toString() : null,
+    };
+  }
+
+  // The list of *newly seen* contracts (for enrichment) is everything we
+  // saw that wasn't in the known set.
+  const newContracts = [];
+  for (const addr of stats.keys()) {
+    if (!knownAddresses.has(addr)) newContracts.push(addr);
+  }
+
+  console.log(
+    `Hypersync done: ${stats.size} contracts total (${newContracts.length} new), ${queries} queries`,
+  );
+  return { contracts: newContracts, statsByAddress, lastBlock: cursor };
 }
 
 // ── 2. Multicall enrichment ───────────────────────────────────────
@@ -381,7 +431,10 @@ async function main() {
     );
   }
 
-  const { contracts, lastBlock } = await discoverErc721Contracts(startBlock, knownAddresses);
+  const { contracts, statsByAddress, lastBlock } = await discoverErc721Contracts(
+    startBlock,
+    knownAddresses,
+  );
 
   // Skip enrichment entirely if no new contracts found.
   let newEnriched = [];
@@ -393,13 +446,58 @@ async function main() {
     console.log("No new contracts to enrich — only the block cursor advanced.");
   }
 
-  // Merge: keep prior enriched data, append new filtered results.
-  const merged = [...previousCollections, ...newFiltered];
+  // Attach stats to every collection (both previously-known and newly-found).
+  // Stats from a delta scan are *additive* — they only cover the new block
+  // range. Previous-snapshot stats get summed with the delta's contribution
+  // so the cumulative numbers stay accurate.
+  const mergeStats = (existing, delta) => {
+    if (!delta) return existing;
+    return {
+      transferCount: (existing?.transferCount ?? 0) + delta.transferCount,
+      uniqueHolders: Math.max(existing?.uniqueHolders ?? 0, delta.uniqueHolders),
+      firstTransferBlock:
+        existing?.firstTransferBlock && existing.firstTransferBlock > 0
+          ? Math.min(existing.firstTransferBlock, delta.firstTransferBlock || existing.firstTransferBlock)
+          : delta.firstTransferBlock,
+      lowestTokenId:
+        existing?.lowestTokenId != null && delta.lowestTokenId != null
+          ? BigInt(existing.lowestTokenId) < BigInt(delta.lowestTokenId)
+            ? existing.lowestTokenId
+            : delta.lowestTokenId
+          : existing?.lowestTokenId ?? delta.lowestTokenId,
+    };
+  };
+
+  // Apply stats to both tiers.
+  const attachStats = (col) => {
+    const delta = statsByAddress[col.address.toLowerCase()];
+    const existing = {
+      transferCount: col.transferCount,
+      uniqueHolders: col.uniqueHolders,
+      firstTransferBlock: col.firstTransferBlock,
+      lowestTokenId: col.lowestTokenId,
+    };
+    return { ...col, ...mergeStats(existing, delta) };
+  };
+
+  const previousWithStats = previousCollections.map(attachStats);
+  const newWithStats = newFiltered.map((col) => ({
+    ...col,
+    ...(statsByAddress[col.address.toLowerCase()] ?? {
+      transferCount: 0,
+      uniqueHolders: 0,
+      firstTransferBlock: 0,
+      lowestTokenId: null,
+    }),
+  }));
+
+  const merged = [...previousWithStats, ...newWithStats];
 
   const snapshot = {
     chainId: CHAIN_ID,
     lastBlock,
     builtAt: Date.now(),
+    schemaVersion: 2,
     collections: merged,
   };
 

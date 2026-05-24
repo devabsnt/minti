@@ -38,7 +38,7 @@ import {
   CancelOfferButton,
   AcceptCollectionOfferButton,
 } from "@/components/marketplace/ActionButtons";
-import { formatPrice, truncateAddress, timeAgo } from "@/lib/format";
+import { formatPrice, truncateAddress, timeAgo, formatNumber } from "@/lib/format";
 import { PAGE_SIZE } from "@/config/constants";
 import { MINTI_MARKETPLACE_ADDRESS, getNativeSymbol } from "@/config/chains";
 import { useBrowseChain } from "@/providers/ChainProvider";
@@ -224,7 +224,7 @@ function CollectionPage({
             <p className="text-xs text-foreground-secondary font-mono">
               {truncateAddress(collectionAddress, 8)}
               {totalSupply > 0 && (
-                <span className="ml-2">&middot; {totalSupply.toLocaleString()} items</span>
+                <span className="ml-2">&middot; {formatNumber(totalSupply)} items</span>
               )}
               {isEvmfs && (
                 <span className="ml-2">
@@ -356,7 +356,7 @@ function CollectionPage({
           <div className="flex-1 min-w-0">
             {filteredIds !== null && (
               <div className="mb-4 text-xs text-foreground-secondary">
-                {filteredIds.length.toLocaleString()} match
+                {formatNumber(filteredIds.length)} match
                 {filteredIds.length === 1 ? "" : "es"} for current filters
               </div>
             )}

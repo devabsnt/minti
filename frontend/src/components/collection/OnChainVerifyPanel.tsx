@@ -11,6 +11,7 @@ import {
 } from "@/lib/evmfs";
 import { useBrowseChain } from "@/providers/ChainProvider";
 import { CHAIN_NAMES } from "@/config/chains";
+import { formatNumber } from "@/lib/format";
 
 interface OnChainVerifyPanelProps {
   metadataManifest: `0x${string}`;
@@ -102,7 +103,7 @@ export function OnChainVerifyPanel({
               <span className="text-foreground-secondary">({evmfsContract})</span>
             </dd>
             <dt className="text-foreground-secondary">block</dt>
-            <dd>{blockNumber.toLocaleString()}</dd>
+            <dd>{formatNumber(blockNumber)}</dd>
             <dt className="text-foreground-secondary">hash</dt>
             <dd>{metadataManifest}</dd>
           </dl>
@@ -148,7 +149,7 @@ function VerifyStatus({ state }: { state: VerifyState }) {
   if (state.kind === "ok")
     return (
       <span className="text-xs text-mint">
-        ✓ Verified · {state.bytes.toLocaleString()} bytes · {state.ms}ms
+        ✓ Verified · {formatNumber(state.bytes)} bytes · {state.ms}ms
       </span>
     );
   return (

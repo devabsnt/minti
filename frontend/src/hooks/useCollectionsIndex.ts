@@ -24,13 +24,56 @@ export interface IndexedCollection {
   totalSupply: string | null;
   is721: boolean;
   is1155: boolean;
+  // ─── snapshot v2 fields (may be missing on older snapshots) ───
+  transferCount?: number;
+  uniqueHolders?: number;
+  firstTransferBlock?: number;
+  lowestTokenId?: string | null;
 }
 
 export interface CollectionsIndex {
   chainId: number;
   lastBlock: number;
   builtAt: number;
+  schemaVersion?: number;
   collections: IndexedCollection[];
+}
+
+/**
+ * Score a collection's likely legitimacy. Higher = more likely real. Used
+ * for both default sort order AND name-collision dedupe (winner per name).
+ *
+ * Heuristics (sum):
+ *   - transferCount     — direct activity signal
+ *   - uniqueHolders × 5 — distinct ownership weighted higher than raw txns
+ *
+ * Both are sourced from the snapshot's per-contract running tallies.
+ */
+export function legitimacyScore(c: IndexedCollection): number {
+  return (c.transferCount ?? 0) + (c.uniqueHolders ?? 0) * 5;
+}
+
+/**
+ * Collapse duplicate-name collections into one entry per name. The winner is
+ * the entry with the highest legitimacy score. Collections with no name
+ * (or only a symbol) fall back to symbol-keyed dedupe so "BAYC ticker only"
+ * scams still collapse.
+ */
+export function dedupeByName(items: IndexedCollection[]): IndexedCollection[] {
+  const winners = new Map<string, IndexedCollection>();
+  const keep = [];
+  for (const c of items) {
+    const key = (c.name || c.symbol || c.address).toLowerCase();
+    const incumbent = winners.get(key);
+    if (!incumbent || legitimacyScore(c) > legitimacyScore(incumbent)) {
+      winners.set(key, c);
+    }
+  }
+  for (const c of items) {
+    const key = (c.name || c.symbol || c.address).toLowerCase();
+    if (winners.get(key) === c) keep.push(c);
+  }
+  return keep;
 }
 
 // Snapshot location is per-chain. Add chains here as snapshots are built.
@@ -62,8 +105,14 @@ export function useCollectionsIndex() {
 }
 
 /**
- * Simple substring search over the index. Matches name OR symbol OR a
- * prefix of the address. Case-insensitive. Returns up to `limit` hits.
+ * Substring search + activity-based ranking.
+ *
+ *   - Dedupes by name (keeps the highest-activity winner per name)
+ *   - Sorts by `legitimacyScore` descending so high-activity collections
+ *     surface first
+ *   - With an empty query, returns the top `limit` by score (default
+ *     /explore landing view)
+ *   - With a query, scores matches the same way then truncates
  */
 export function searchIndex(
   index: CollectionsIndex | undefined,
@@ -71,20 +120,20 @@ export function searchIndex(
   limit = 50,
 ): IndexedCollection[] {
   if (!index) return [];
+  const deduped = dedupeByName(index.collections);
   const q = query.trim().toLowerCase();
-  if (!q) return index.collections.slice(0, limit);
 
-  const out: IndexedCollection[] = [];
-  for (const c of index.collections) {
-    const name = (c.name || "").toLowerCase();
-    const symbol = (c.symbol || "").toLowerCase();
-    const addr = c.address.toLowerCase();
-    if (name.includes(q) || symbol.includes(q) || addr.startsWith(q)) {
-      out.push(c);
-      if (out.length >= limit) break;
-    }
-  }
-  return out;
+  const matched = q
+    ? deduped.filter((c) => {
+        const name = (c.name || "").toLowerCase();
+        const symbol = (c.symbol || "").toLowerCase();
+        const addr = c.address.toLowerCase();
+        return name.includes(q) || symbol.includes(q) || addr.startsWith(q);
+      })
+    : deduped;
+
+  matched.sort((a, b) => legitimacyScore(b) - legitimacyScore(a));
+  return matched.slice(0, limit);
 }
 
 /** Suggestion: when hasSnapshot is false, callers should fall back to

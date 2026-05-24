@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useTokenViewerUri } from "@/hooks/useTokenViewerUri";
-import { truncateAddress } from "@/lib/format";
+import { truncateAddress, formatNumber } from "@/lib/format";
 import { evmfsLabel } from "@/lib/evmfs";
 import { CollectionKind, isEvmfsKind, kindLabel } from "@/lib/abi/EVMFSCollectionRegistry";
 import type { RegisteredCollection } from "@/hooks/useRegistry";
@@ -49,7 +49,7 @@ export function CollectionCard({ collection }: CollectionCardProps) {
         </div>
         <div className="flex items-center justify-between text-xs text-foreground-secondary">
           <span>{collection.symbol}</span>
-          <span>{supply.toLocaleString()} supply</span>
+          <span>{formatNumber(supply)} supply</span>
         </div>
         <div className="text-[11px] text-foreground-secondary truncate">
           by {truncateAddress(collection.creator)}
