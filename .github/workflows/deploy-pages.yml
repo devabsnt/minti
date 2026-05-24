@@ -60,6 +60,10 @@ jobs:
         working-directory: frontend
         env:
           NODE_ENV: production
+          # Leave empty when serving the custom domain (minti.art). Set to
+          # "/<repo-name>" (e.g. "/minti") when previewing via the github.io
+          # URL — Next bakes that prefix into all asset paths.
+          PAGES_BASE_PATH: ${{ vars.PAGES_BASE_PATH }}
         run: npm run build
 
       - name: Add .nojekyll
