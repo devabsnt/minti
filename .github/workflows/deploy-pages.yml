@@ -51,7 +51,10 @@ jobs:
 
       - name: Install frontend deps
         working-directory: frontend
-        run: npm ci
+        # --legacy-peer-deps matches our local install — RainbowKit's peer
+        # range (wagmi ^2.9) is stale and conflicts with the wagmi v3 we
+        # actually use. Removing this once RainbowKit publishes a v3 build.
+        run: npm ci --legacy-peer-deps
 
       - name: Build static export
         working-directory: frontend
