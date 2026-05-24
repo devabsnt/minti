@@ -100,15 +100,23 @@ export function useBatchNftMetadata(tokens: BatchToken[]) {
 
       const userRpc = getEffectiveRpc(browseChainId);
 
-      // Check IndexedDB cache first for all tokens
+      // Check IndexedDB cache for every token in parallel. Sequential
+      // awaits were costing ~5ms per token = visible blocking time for
+      // wallets with dozens of NFTs before anything renders on refresh.
+      const cacheChecks = await Promise.all(
+        tokens.map(async (t) => {
+          const key = metadataCacheKey(browseChainId, t.contractAddress, t.tokenId.toString());
+          const cached = await getFromCache<NftMetadata>(key);
+          return { token: t, cacheKey: key, cached };
+        }),
+      );
+
       const uncached: { index: number; token: BatchToken; cacheKey: string }[] = [];
-      for (let i = 0; i < tokens.length; i++) {
-        const t = tokens[i];
-        const key = metadataCacheKey(browseChainId, t.contractAddress, t.tokenId.toString());
-        const cached = await getFromCache<NftMetadata>(key);
+      for (let i = 0; i < cacheChecks.length; i++) {
+        const { token: t, cacheKey: key, cached } = cacheChecks[i];
         if (cached) {
           results.set(`${t.contractAddress}:${t.tokenId}`, cached);
-          // Seed single-token cache
+          // Seed single-token cache so individual hook calls don't re-fetch
           queryClient.setQueryData(
             ["nft-metadata", browseChainId, t.contractAddress, t.tokenId.toString()],
             cached

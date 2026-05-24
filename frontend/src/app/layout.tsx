@@ -5,6 +5,7 @@ import { Web3Provider } from "@/providers/Web3Provider";
 import { Header } from "@/components/layout/Header";
 import { Footer } from "@/components/layout/Footer";
 import { ToastProvider } from "@/components/ui/Toast";
+import { ServiceWorkerRegister } from "@/components/ServiceWorkerRegister";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -55,6 +56,7 @@ export default function RootLayout({
             <Footer />
           </ToastProvider>
         </Web3Provider>
+        <ServiceWorkerRegister />
       </body>
     </html>
   );
