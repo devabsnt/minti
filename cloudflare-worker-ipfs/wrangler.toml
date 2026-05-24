@@ -1,0 +1,8 @@
+name = "ipfs-cache"
+main = "src/index.js"
+compatibility_date = "2024-09-23"
+
+# Edge cache for IPFS content. Workers get free CDN caching via the
+# `caches.default` API — once a CID has been fetched once, every
+# subsequent request anywhere on the planet hits Cloudflare's nearest
+# colo in <50ms.

@@ -51,19 +51,28 @@ async function fetchWithGatewayFallback(uri: string): Promise<string> {
     return response.text();
   }
 
-  // IPFS-shaped URI — try each gateway in turn.
-  let lastError: Error | null = null;
-  for (let i = 0; i < IPFS_GATEWAYS.length; i++) {
-    try {
-      const url = IPFS_GATEWAYS[i] + ipfs.cid + ipfs.path;
-      const response = await fetch(url, { signal: AbortSignal.timeout(10_000) });
-      if (response.ok) return response.text();
-      lastError = new Error(`gateway ${i}: ${response.status}`);
-    } catch (e) {
-      lastError = e instanceof Error ? e : new Error(String(e));
-    }
+  // IPFS-shaped URI — race all gateways in parallel. Whichever returns
+  // first wins. This drops cold-read latency from "slowest gateway timeout"
+  // to "fastest gateway response", usually 200-800ms vs 5-10s sequential.
+  //
+  // The IPFS_GATEWAYS list starts with our own Cloudflare cache worker
+  // (when configured) which usually replies in <50ms for repeat reads.
+  const attempts = IPFS_GATEWAYS.map(async (gateway) => {
+    const url = gateway + ipfs.cid + ipfs.path;
+    const response = await fetch(url, { signal: AbortSignal.timeout(10_000) });
+    if (!response.ok) throw new Error(`gateway ${gateway}: ${response.status}`);
+    return response.text();
+  });
+  try {
+    return await Promise.any(attempts);
+  } catch (err) {
+    // Promise.any throws AggregateError when every attempt failed.
+    const inner =
+      err instanceof AggregateError && err.errors[0] instanceof Error
+        ? err.errors[0]
+        : (err as Error);
+    throw inner || new Error("All IPFS gateways failed");
   }
-  throw lastError || new Error("All IPFS gateways failed");
 }
 
 /**

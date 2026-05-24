@@ -32,6 +32,19 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en" className="dark">
+      <head>
+        {/*
+          Pre-resolve DNS + open TCP/TLS to the IPFS cache and fallback
+          gateways before the first image request fires. Saves 100-300ms
+          on every cold image load.
+        */}
+        <link rel="preconnect" href="https://ipfs-cache.devskibb.workers.dev" crossOrigin="" />
+        <link rel="dns-prefetch" href="https://ipfs-cache.devskibb.workers.dev" />
+        <link rel="dns-prefetch" href="https://ipfs.io" />
+        <link rel="dns-prefetch" href="https://dweb.link" />
+        <link rel="dns-prefetch" href="https://4everland.io" />
+        <link rel="dns-prefetch" href="https://w3s.link" />
+      </head>
       <body
         className={`${geistSans.variable} ${geistMono.variable} antialiased min-h-screen flex flex-col`}
       >

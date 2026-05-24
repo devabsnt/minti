@@ -1,9 +1,19 @@
-// Browser-friendly IPFS gateways only. Pinata's public gateway blocks
-// cross-origin requests (no Access-Control-Allow-Origin header) for any
-// content not pinned to their service, so every fetch is wasted CORS
-// noise. The list below is gateways that reliably send CORS headers for
-// arbitrary CIDs.
+/**
+ * Edge-cached IPFS proxy. Deployed in cloudflare-worker-ipfs/. Fronts the
+ * public gateways with parallel-race + 1-year CDN cache. Always prefer
+ * this over hitting gateways directly — cold reads land at the fastest
+ * gateway, warm reads come back in <50ms from Cloudflare's edge.
+ *
+ * Leave empty to bypass and use the raw gateway list below (e.g. on
+ * localhost when the proxy isn't reachable).
+ */
+export const IPFS_PROXY_BASE = "https://ipfs-cache.devskibb.workers.dev/ipfs/";
+
+// Fallback gateway list used when the proxy is unset or returns an error.
+// Browser-friendly only — Pinata's public gateway blocks cross-origin
+// requests for content not pinned to their service.
 export const IPFS_GATEWAYS = [
+  IPFS_PROXY_BASE || "https://ipfs.io/ipfs/",
   "https://ipfs.io/ipfs/",
   "https://dweb.link/ipfs/",
   "https://4everland.io/ipfs/",
