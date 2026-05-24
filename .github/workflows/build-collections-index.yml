@@ -9,6 +9,11 @@ on:
     - cron: "0 6 * * 1" # Mondays 06:00 UTC
   workflow_dispatch:
     inputs:
+      force_full_rescan:
+        description: "Ignore previous snapshot and rebuild from block 0."
+        required: false
+        type: boolean
+        default: false
       max_blocks:
         description: "Cap on blocks scanned (debug). Leave empty for full chain."
         required: false
@@ -40,6 +45,7 @@ jobs:
           HYPERSYNC_TOKEN: ${{ secrets.HYPERSYNC_TOKEN }}
           MAX_BLOCKS: ${{ inputs.max_blocks }}
           ENRICH_LIMIT: ${{ inputs.enrich_limit }}
+          FORCE_FULL_RESCAN: ${{ inputs.force_full_rescan && '1' || '' }}
         run: node scripts/build-collections-index.mjs
 
       - name: Commit snapshot if changed
