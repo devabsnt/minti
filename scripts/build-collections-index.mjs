@@ -24,7 +24,7 @@
  *   HYPERSYNC_TOKEN=… node build-collections-index.mjs
  */
 
-import { writeFileSync, mkdirSync } from "node:fs";
+import { writeFileSync, mkdirSync, readFileSync, existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createPublicClient, defineChain, http } from "viem";
@@ -55,6 +55,17 @@ const RPC_URLS = (process.env.MONAD_RPC || DEFAULT_RPCS.join(","))
 
 const MAX_BLOCKS = process.env.MAX_BLOCKS ? Number(process.env.MAX_BLOCKS) : Infinity;
 const ENRICH_LIMIT = process.env.ENRICH_LIMIT ? Number(process.env.ENRICH_LIMIT) : Infinity;
+const FORCE_FULL_RESCAN = process.env.FORCE_FULL_RESCAN === "1";
+
+const SNAPSHOT_PATH = path.join(
+  fileURLToPath(import.meta.url),
+  "..",
+  "..",
+  "frontend",
+  "public",
+  "data",
+  "monad-collections.json",
+);
 
 const TRANSFER_TOPIC =
   "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef";
@@ -141,10 +152,34 @@ async function hypersync(body) {
   throw lastErr ?? new Error("Hypersync exhausted retries");
 }
 
-async function discoverErc721Contracts() {
-  console.log("Hypersync: discovering ERC-721 contracts via Transfer events...");
+function loadPreviousSnapshot() {
+  if (FORCE_FULL_RESCAN) {
+    console.log("FORCE_FULL_RESCAN set — ignoring previous snapshot");
+    return null;
+  }
+  if (!existsSync(SNAPSHOT_PATH)) return null;
+  try {
+    const parsed = JSON.parse(readFileSync(SNAPSHOT_PATH, "utf8"));
+    if (typeof parsed.lastBlock !== "number" || !Array.isArray(parsed.collections)) {
+      console.warn("Previous snapshot is malformed; ignoring");
+      return null;
+    }
+    return parsed;
+  } catch (err) {
+    console.warn(`Could not parse previous snapshot: ${err.message}`);
+    return null;
+  }
+}
+
+async function discoverErc721Contracts(startBlock = 0, knownAddresses = new Set()) {
+  console.log(
+    `Hypersync: scanning Transfer events from block ${startBlock}` +
+      (knownAddresses.size > 0
+        ? ` (${knownAddresses.size} contracts already known)`
+        : ""),
+  );
   const contracts = new Set();
-  let cursor = 0;
+  let cursor = startBlock;
   let target = 0;
   let queries = 0;
   const startTime = Date.now();
@@ -172,7 +207,9 @@ async function discoverErc721Contracts() {
       for (const log of batch.logs || []) {
         // topic3 presence confirms ERC-721 (not ERC-20)
         if (log.topic3 && log.address) {
-          contracts.add(log.address.toLowerCase());
+          const addr = log.address.toLowerCase();
+          // Skip ones we already enriched in a prior run.
+          if (!knownAddresses.has(addr)) contracts.add(addr);
         }
       }
     }
@@ -328,22 +365,50 @@ async function main() {
   console.log(`  Hypersync: ${HYPERSYNC_URL}`);
   console.log(`  RPCs: ${RPC_URLS.length} (${RPC_URLS[0]}, …)`);
 
-  const { contracts, lastBlock } = await discoverErc721Contracts();
-  const enriched = await enrichAll(contracts);
-  const filtered = filterRealCollections(enriched);
+  // ── Checkpoint: resume from previous snapshot if present ─────────
+  // Transfer events are immutable on-chain, so any block we've already
+  // scanned never needs to be re-scanned. We carry forward the previous
+  // snapshot's enriched collections and only enrich newly-discovered
+  // contracts in the delta range.
+  const previous = loadPreviousSnapshot();
+  const startBlock = previous ? previous.lastBlock + 1 : 0;
+  const previousCollections = previous?.collections ?? [];
+  const knownAddresses = new Set(previousCollections.map((c) => c.address.toLowerCase()));
+
+  if (previous) {
+    console.log(
+      `Resuming from block ${startBlock} (previous snapshot: ${previousCollections.length} collections, built ${new Date(previous.builtAt).toISOString()})`,
+    );
+  }
+
+  const { contracts, lastBlock } = await discoverErc721Contracts(startBlock, knownAddresses);
+
+  // Skip enrichment entirely if no new contracts found.
+  let newEnriched = [];
+  let newFiltered = [];
+  if (contracts.length > 0) {
+    newEnriched = await enrichAll(contracts);
+    newFiltered = filterRealCollections(newEnriched);
+  } else {
+    console.log("No new contracts to enrich — only the block cursor advanced.");
+  }
+
+  // Merge: keep prior enriched data, append new filtered results.
+  const merged = [...previousCollections, ...newFiltered];
 
   const snapshot = {
     chainId: CHAIN_ID,
     lastBlock,
     builtAt: Date.now(),
-    collections: filtered,
+    collections: merged,
   };
 
-  const outPath = path.join(__dirname, "..", "frontend", "public", "data", "monad-collections.json");
-  mkdirSync(path.dirname(outPath), { recursive: true });
-  writeFileSync(outPath, JSON.stringify(snapshot));
+  mkdirSync(path.dirname(SNAPSHOT_PATH), { recursive: true });
+  writeFileSync(SNAPSHOT_PATH, JSON.stringify(snapshot));
   const sizeKb = (JSON.stringify(snapshot).length / 1024).toFixed(0);
-  console.log(`Wrote ${outPath} (${sizeKb} KB, ${filtered.length} collections)`);
+  console.log(
+    `Wrote ${SNAPSHOT_PATH} (${sizeKb} KB, ${merged.length} total collections, +${newFiltered.length} new this run)`,
+  );
 }
 
 main().catch((err) => {
