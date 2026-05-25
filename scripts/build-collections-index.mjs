@@ -124,7 +124,24 @@ const ZERO_ADDR = "0x" + "00".repeat(20);
 // Cap per-collection balance maps in full-rescan mode. Contracts above this
 // holder count get `top1HolderPct = null` — they're nearly always operational
 // NFTs (CLOB positions, LP NFTs, name service) anyway.
-const MAX_BALANCE_MAP_SIZE = 50_000;
+const MAX_BALANCE_MAP_SIZE = 30_000;
+
+// Cap per-contract receiver/sender Sets. Anything beyond a few thousand
+// distinct holders is operational, not a collectible — we still serialize
+// the cap as the count and flag the contract as "approx".
+const MAX_SET_SIZE = 5_000;
+
+// Cap recent-window per-contract receiver/sender Sets. 30-day window so
+// real collections rarely exceed a few hundred unique participants.
+const MAX_RECENT_SET_SIZE = 1_000;
+
+// Threshold for triggering pass 2 balance computation. Below this, the
+// contract is almost certainly tier-0 spam and we don't waste cycles
+// computing holder concentration.
+const PASS2_MIN_HOLDERS = 20;
+
+// How many contracts per pass-2 Hypersync query (address filter limit).
+const PASS2_BATCH_SIZE = 50;
 
 // Hypersync polite delay between paged queries
 const HYPERSYNC_PAGE_DELAY_MS = 200;
@@ -217,8 +234,12 @@ function loadPreviousSnapshot() {
 }
 
 /**
- * Stats bucket accumulated during a Hypersync sweep. The Sets are kept in
- * memory only — we serialize their sizes.
+ * Stats bucket accumulated during the main sweep. The Sets are kept in
+ * memory only — we serialize their sizes. Once any Set hits MAX_SET_SIZE
+ * we stop tracking new entries (further inserts no-op) and flag the
+ * bucket as `setsCapped`. The serialized count is the cap rather than
+ * the true cardinality — fine because such contracts are operational
+ * NFTs that won't rank anyway.
  */
 function makeStatsBucket() {
   return {
@@ -226,18 +247,17 @@ function makeStatsBucket() {
     mintCount: 0,
     burnCount: 0,
     selfTransferCount: 0,
-    receivers: new Set(), // unique `to` addresses (excluding 0x0)
-    senders: new Set(), // unique `from` addresses (excluding 0x0)
+    receivers: new Set(),
+    senders: new Set(),
+    setsCapped: false,
     firstBlock: Infinity,
     lowestTokenId: null,
-    // Balance map kept only for FULL rescan (set to null in delta mode).
-    balances: null,
-    balanceMapOverflow: false,
   };
 }
 
 /**
- * Apply one Transfer event to a bucket. `from`, `to` are lowercased 0x addresses.
+ * Apply one Transfer event to a bucket. `from`, `to` are lowercased 0x
+ * addresses. No balance tracking here — see pass 2.
  */
 function applyTransfer(bucket, from, to, blockNumber, tokenId) {
   bucket.transferCount++;
@@ -248,8 +268,16 @@ function applyTransfer(bucket, from, to, blockNumber, tokenId) {
   if (isBurn) bucket.burnCount++;
   if (!isMint && !isBurn && from === to) bucket.selfTransferCount++;
 
-  if (!isBurn) bucket.receivers.add(to);
-  if (!isMint) bucket.senders.add(from);
+  if (!isBurn && bucket.receivers.size < MAX_SET_SIZE) {
+    bucket.receivers.add(to);
+  } else if (!isBurn) {
+    bucket.setsCapped = true;
+  }
+  if (!isMint && bucket.senders.size < MAX_SET_SIZE) {
+    bucket.senders.add(from);
+  } else if (!isMint) {
+    bucket.setsCapped = true;
+  }
 
   if (blockNumber != null && blockNumber < bucket.firstBlock) {
     bucket.firstBlock = blockNumber;
@@ -260,37 +288,29 @@ function applyTransfer(bucket, from, to, blockNumber, tokenId) {
       bucket.lowestTokenId = tid;
     }
   }
-
-  // Balance simulation (full rescan only)
-  if (bucket.balances && !bucket.balanceMapOverflow) {
-    if (!isMint) {
-      const b = (bucket.balances.get(from) ?? 0) - 1;
-      if (b === 0) bucket.balances.delete(from);
-      else bucket.balances.set(from, b);
-    }
-    if (!isBurn) {
-      const b = (bucket.balances.get(to) ?? 0) + 1;
-      bucket.balances.set(to, b);
-      if (bucket.balances.size > MAX_BALANCE_MAP_SIZE) {
-        bucket.balanceMapOverflow = true;
-        bucket.balances = null;
-      }
-    }
-  }
 }
 
-function materializeConcentration(bucket) {
-  if (!bucket.balances) return { top1HolderPct: null, top10HolderPct: null };
-  const balances = [...bucket.balances.values()].filter((v) => v > 0);
+/**
+ * From a fresh balance Map (built in pass 2), compute top1/top10 holder
+ * concentration. Returns nulls when no balance data is available (e.g.
+ * because the contract overflowed MAX_BALANCE_MAP_SIZE during replay).
+ */
+function materializeConcentration(balanceMap) {
+  if (!balanceMap) return { top1HolderPct: null, top10HolderPct: null };
+  const balances = [];
+  for (const v of balanceMap.values()) if (v > 0) balances.push(v);
   if (balances.length === 0) return { top1HolderPct: 0, top10HolderPct: 0 };
   balances.sort((a, b) => b - a);
-  const total = balances.reduce((a, b) => a + b, 0);
+  let total = 0;
+  for (const v of balances) total += v;
   if (total === 0) return { top1HolderPct: 0, top10HolderPct: 0 };
   const top1 = balances[0] / total;
-  const top10 = balances.slice(0, 10).reduce((a, b) => a + b, 0) / total;
+  const top10Slice = balances.slice(0, 10);
+  let top10Sum = 0;
+  for (const v of top10Slice) top10Sum += v;
   return {
     top1HolderPct: round4(top1),
-    top10HolderPct: round4(top10),
+    top10HolderPct: round4(top10Sum / total),
   };
 }
 
@@ -304,8 +324,7 @@ async function discoverErc721Contracts(startBlock, knownAddresses, isFullRescan)
     `Hypersync: scanning Transfer events from block ${startBlock}` +
       (knownAddresses.size > 0
         ? ` (${knownAddresses.size} contracts already known)`
-        : "") +
-      (isFullRescan ? " — FULL RESCAN with balance tracking" : ""),
+        : ""),
   );
   const stats = new Map();
   let cursor = startBlock;
@@ -330,12 +349,6 @@ async function discoverErc721Contracts(startBlock, knownAddresses, isFullRescan)
         let bucket = stats.get(addr);
         if (!bucket) {
           bucket = makeStatsBucket();
-          // Balance tracking only useful when starting from block 0 for this
-          // contract. In FULL rescan we always start at 0. In delta mode, we
-          // only see NEW contracts here (filtered by knownAddresses below) —
-          // their history starts at startBlock, so balance simulation is
-          // accurate only if startBlock = 0.
-          if (isFullRescan) bucket.balances = new Map();
           stats.set(addr, bucket);
         }
 
@@ -365,12 +378,12 @@ async function discoverErc721Contracts(startBlock, knownAddresses, isFullRescan)
     await sleep(HYPERSYNC_PAGE_DELAY_MS);
   }
 
-  // Materialize per-address stats objects
+  // Materialize per-address stats objects. Drop the Sets immediately
+  // after reading their sizes so the GC can reclaim before we start the
+  // memory-heavy recent-window + concentration passes.
   const statsByAddress = {};
+  const newContracts = [];
   for (const [addr, bucket] of stats.entries()) {
-    const concentration = isFullRescan
-      ? materializeConcentration(bucket)
-      : { top1HolderPct: null, top10HolderPct: null };
     statsByAddress[addr] = {
       transferCount: bucket.transferCount,
       mintCount: bucket.mintCount,
@@ -378,11 +391,21 @@ async function discoverErc721Contracts(startBlock, knownAddresses, isFullRescan)
       selfTransferCount: bucket.selfTransferCount,
       uniqueHolders: bucket.receivers.size,
       uniqueSenders: bucket.senders.size,
+      setsCapped: bucket.setsCapped,
       firstTransferBlock: bucket.firstBlock === Infinity ? 0 : bucket.firstBlock,
       lowestTokenId: bucket.lowestTokenId != null ? bucket.lowestTokenId.toString() : null,
-      ...concentration,
+      top1HolderPct: null,
+      top10HolderPct: null,
     };
+    if (!knownAddresses.has(addr)) newContracts.push(addr);
   }
+  // Explicitly free the bucket map + per-contract Sets.
+  stats.clear();
+  if (typeof globalThis.gc === "function") globalThis.gc();
+
+  console.log(
+    `Hypersync sweep done: ${Object.keys(statsByAddress).length} contracts total (${newContracts.length} new), ${queries} queries`,
+  );
 
   // Recent-window pass (always fresh)
   const recentStats = await scanRecentWindow(cursor);
@@ -391,15 +414,109 @@ async function discoverErc721Contracts(startBlock, knownAddresses, isFullRescan)
     Object.assign(statsByAddress[addr], recent);
   }
 
-  const newContracts = [];
-  for (const addr of stats.keys()) {
-    if (!knownAddresses.has(addr)) newContracts.push(addr);
+  // Free recent-stats source object now that we've copied it.
+  for (const key of Object.keys(recentStats)) delete recentStats[key];
+
+  // Pass 2 — concentration. Only for full rescan, and only for contracts
+  // that crossed the holder threshold (skip the long tail of garbage).
+  if (isFullRescan) {
+    const candidates = [];
+    for (const [addr, s] of Object.entries(statsByAddress)) {
+      if ((s.uniqueHolders ?? 0) >= PASS2_MIN_HOLDERS) candidates.push(addr);
+    }
+    console.log(
+      `Pass 2 (concentration): ${candidates.length}/${Object.keys(statsByAddress).length} candidates`,
+    );
+    const concByAddress = await computeConcentrationBatch(candidates, cursor);
+    for (const [addr, conc] of Object.entries(concByAddress)) {
+      if (statsByAddress[addr]) Object.assign(statsByAddress[addr], conc);
+    }
   }
 
-  console.log(
-    `Hypersync done: ${stats.size} contracts total (${newContracts.length} new), ${queries} queries`,
-  );
   return { contracts: newContracts, statsByAddress, lastBlock: cursor };
+}
+
+// ── 1c. Pass 2: focused balance replay for concentration ──────────
+/**
+ * Query Hypersync filtered by a list of contract addresses (cap
+ * PASS2_BATCH_SIZE per query for filter shape sanity). Replay each
+ * contract's Transfers into a balance Map, compute top1/top10 holder
+ * percent, free the map, move on. Memory peaks at ~PASS2_BATCH_SIZE
+ * contracts simultaneously.
+ */
+async function computeConcentrationBatch(addresses, currentBlock) {
+  const out = {};
+  if (addresses.length === 0) return out;
+
+  const startTime = Date.now();
+  let totalQueries = 0;
+
+  for (let i = 0; i < addresses.length; i += PASS2_BATCH_SIZE) {
+    const slice = addresses.slice(i, i + PASS2_BATCH_SIZE);
+    const balances = new Map(); // addr → Map<holder, balance>
+    const overflowed = new Set(); // addresses that blew MAX_BALANCE_MAP_SIZE
+    for (const a of slice) balances.set(a, new Map());
+
+    let cursor = 0;
+    while (true) {
+      const result = await hypersync({
+        from_block: cursor,
+        to_block: currentBlock,
+        logs: [
+          {
+            address: slice,
+            topics: [[TRANSFER_TOPIC], [], [], []],
+          },
+        ],
+        field_selection: { log: ["address", "topic1", "topic2", "topic3"] },
+      });
+      for (const batch of result.data || []) {
+        for (const log of batch.logs || []) {
+          if (!log.topic3 || !log.address) continue;
+          const addr = log.address.toLowerCase();
+          if (overflowed.has(addr)) continue;
+          const m = balances.get(addr);
+          if (!m) continue;
+          const from = topicToAddr(log.topic1);
+          const to = topicToAddr(log.topic2);
+          const isMint = from === ZERO_ADDR;
+          const isBurn = to === ZERO_ADDR;
+          if (!isMint) {
+            const b = (m.get(from) ?? 0) - 1;
+            if (b === 0) m.delete(from);
+            else m.set(from, b);
+          }
+          if (!isBurn) {
+            const b = (m.get(to) ?? 0) + 1;
+            m.set(to, b);
+            if (m.size > MAX_BALANCE_MAP_SIZE) {
+              overflowed.add(addr);
+              balances.set(addr, null); // free the map
+            }
+          }
+        }
+      }
+      cursor = result.next_block;
+      totalQueries++;
+      if (cursor >= currentBlock || cursor >= result.archive_height) break;
+      await sleep(HYPERSYNC_PAGE_DELAY_MS);
+    }
+
+    for (const addr of slice) {
+      const m = balances.get(addr);
+      out[addr] = materializeConcentration(m);
+    }
+    balances.clear();
+    if (typeof globalThis.gc === "function") globalThis.gc();
+
+    if (i % (PASS2_BATCH_SIZE * 10) === 0 || i + PASS2_BATCH_SIZE >= addresses.length) {
+      const pct = Math.round((Math.min(i + PASS2_BATCH_SIZE, addresses.length) / addresses.length) * 100);
+      const elapsed = Math.round((Date.now() - startTime) / 1000);
+      console.log(`  pass 2: ${i + slice.length}/${addresses.length} (${pct}%), ${totalQueries} queries, ${elapsed}s`);
+    }
+  }
+
+  return out;
 }
 
 /**
@@ -464,14 +581,14 @@ async function scanRecentWindow(currentBlock) {
         if (age <= WINDOW_7D) {
           row.recent7d++;
           if (isMint) row.recentMints7d++;
-          if (!isBurn) row.recentReceivers7d.add(to);
-          if (!isMint) row.recentSenders7d.add(from);
+          if (!isBurn && row.recentReceivers7d.size < MAX_RECENT_SET_SIZE) row.recentReceivers7d.add(to);
+          if (!isMint && row.recentSenders7d.size < MAX_RECENT_SET_SIZE) row.recentSenders7d.add(from);
         }
         if (age <= WINDOW_24H) {
           row.recent24h++;
           if (isMint) row.recentMints24h++;
-          if (!isBurn) row.recentReceivers24h.add(to);
-          if (!isMint) row.recentSenders24h.add(from);
+          if (!isBurn && row.recentReceivers24h.size < MAX_RECENT_SET_SIZE) row.recentReceivers24h.add(to);
+          if (!isMint && row.recentSenders24h.size < MAX_RECENT_SET_SIZE) row.recentSenders24h.add(from);
         }
       }
     }

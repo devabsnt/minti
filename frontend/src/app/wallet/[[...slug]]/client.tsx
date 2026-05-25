@@ -17,6 +17,7 @@ import { NftImage } from "@/components/nft/NftImage";
 import { Spinner } from "@/components/ui/Spinner";
 import { useNftMetadata, useBatchNftMetadata } from "@/hooks/useNftMetadata";
 import { CancelListingButton } from "@/components/marketplace/ActionButtons";
+import { CopyButton } from "@/components/ui/CopyButton";
 
 type Tab = "owned" | "listed" | "bids" | "offers";
 
@@ -109,10 +110,11 @@ function WalletProfilePage({ address }: { address: `0x${string}` }) {
             {address.slice(2, 4).toUpperCase()}
           </div>
           <div>
-            <h1 className="text-xl font-bold">
-              {truncateAddress(address, 6)}
+            <h1 className="text-xl font-bold flex items-center gap-2">
+              <span>{truncateAddress(address, 6)}</span>
+              <CopyButton value={address} label="Copy wallet address" />
               {isOwnWallet && (
-                <span className="ml-2 text-xs text-mint font-normal">
+                <span className="text-xs text-mint font-normal">
                   (you)
                 </span>
               )}

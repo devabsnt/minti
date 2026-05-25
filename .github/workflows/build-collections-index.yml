@@ -55,6 +55,10 @@ jobs:
           # the deployed address and ItemSold events start populating
           # sales24h/7d, uniqueBuyers, volume.
           MARKETPLACE_ADDRESS: ${{ secrets.MARKETPLACE_ADDRESS }}
+          # Lift Node's default heap limit (1.5GB) to 7GB. The full rescan
+          # touches ~36k contracts and even with the two-pass balance
+          # computation we want headroom for V8's intermediate allocations.
+          NODE_OPTIONS: "--max-old-space-size=7168"
         run: node scripts/build-collections-index.mjs
 
       - name: Commit snapshot if changed

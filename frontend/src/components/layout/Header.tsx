@@ -1,36 +1,47 @@
 "use client";
 
-import { useState, useCallback } from "react";
+import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { usePathname } from "next/navigation";
 import { ChainSelector } from "./ChainSelector";
 import { ConnectButton } from "../wallet/ConnectButton";
-import { isAddress } from "viem";
+import { GlobalSearch } from "./GlobalSearch";
 
 export function Header() {
-  const router = useRouter();
-  const [searchValue, setSearchValue] = useState("");
-  const [searchError, setSearchError] = useState(false);
+  const pathname = usePathname();
+  const [mobileOpen, setMobileOpen] = useState(false);
 
-  const handleSearch = useCallback(() => {
-    const value = searchValue.trim();
-    if (!value) return;
+  // Close the mobile menu whenever the route changes.
+  useEffect(() => {
+    setMobileOpen(false);
+  }, [pathname]);
 
-    if (isAddress(value)) {
-      setSearchError(false);
-      setSearchValue("");
-      router.push(`/collection/${value}`);
-    } else {
-      setSearchError(true);
-      setTimeout(() => setSearchError(false), 2000);
-    }
-  }, [searchValue, router]);
+  // Lock body scroll while the mobile menu is open.
+  useEffect(() => {
+    if (!mobileOpen) return;
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.body.style.overflow = prev;
+    };
+  }, [mobileOpen]);
+
+  const linkClass = useCallback(
+    (href: string, accent = false) => {
+      const active = pathname === href || pathname?.startsWith(href + "/");
+      const base = "text-sm transition-colors";
+      if (active) return `${base} text-mint font-medium`;
+      if (accent) return `${base} text-mint hover:text-mint/80 font-medium`;
+      return `${base} text-foreground-secondary hover:text-foreground`;
+    },
+    [pathname],
+  );
 
   return (
     <header className="sticky top-0 z-50 border-b border-border bg-background/80 backdrop-blur-md">
-      <div className="max-w-7xl mx-auto px-4 h-16 flex items-center justify-between">
+      <div className="max-w-7xl mx-auto px-4 h-16 flex items-center justify-between gap-3">
         {/* Logo + Nav */}
-        <div className="flex items-center gap-8">
+        <div className="flex items-center gap-8 flex-shrink-0">
           <Link href="/" className="shrink-0">
             <span className="font-bold text-lg">
               <span className="text-mint">minti</span>
@@ -39,59 +50,93 @@ export function Header() {
           </Link>
 
           <nav className="hidden md:flex items-center gap-6">
-            <Link
-              href="/explore"
-              className="text-sm text-foreground-secondary hover:text-foreground transition-colors"
-            >
+            <Link href="/explore" className={linkClass("/explore")}>
               Explore
             </Link>
-            <Link
-              href="/launch"
-              className="text-sm text-mint hover:text-mint/80 transition-colors font-medium"
-            >
+            <Link href="/launch" className={linkClass("/launch", true)}>
               Launch
             </Link>
-            <Link
-              href="/generator"
-              className="text-sm text-foreground-secondary hover:text-foreground transition-colors"
-            >
+            <Link href="/generator" className={linkClass("/generator")}>
               Generator
             </Link>
           </nav>
         </div>
 
-        {/* Search */}
-        <div className="hidden sm:flex flex-1 max-w-md mx-4">
-          <div className="relative w-full">
-            <input
-              type="text"
-              value={searchValue}
-              onChange={(e) => setSearchValue(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && handleSearch()}
-              placeholder="Search collection by address (0x...)"
-              aria-label="Search collection by contract address"
-              className={`w-full h-9 px-3 pr-9 text-sm bg-background-secondary border rounded-lg placeholder:text-foreground-secondary/50 focus:outline-none focus:border-mint/50 transition-colors ${
-                searchError ? "border-danger" : "border-border"
-              }`}
-            />
-            <button
-              onClick={handleSearch}
-              aria-label="Search"
-              className="absolute right-2 top-1/2 -translate-y-1/2 text-foreground-secondary hover:text-mint transition-colors"
-            >
-              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="w-4 h-4">
-                <path fillRule="evenodd" d="M9 3.5a5.5 5.5 0 1 0 0 11 5.5 5.5 0 0 0 0-11ZM2 9a7 7 0 1 1 12.452 4.391l3.328 3.329a.75.75 0 1 1-1.06 1.06l-3.329-3.328A7 7 0 0 1 2 9Z" clipRule="evenodd" />
-              </svg>
-            </button>
-          </div>
+        {/* Search — autocompletes by name from the snapshot */}
+        <div className="hidden sm:flex flex-1 max-w-md mx-2 min-w-0">
+          <GlobalSearch />
         </div>
 
         {/* Right side */}
-        <div className="flex items-center gap-3">
-          <ChainSelector />
+        <div className="flex items-center gap-2 sm:gap-3 flex-shrink-0">
+          <div className="hidden sm:block">
+            <ChainSelector />
+          </div>
           <ConnectButton />
+          <button
+            type="button"
+            onClick={() => setMobileOpen((v) => !v)}
+            className="md:hidden p-2 rounded-md text-foreground-secondary hover:text-foreground hover:bg-background-secondary"
+            aria-label={mobileOpen ? "Close menu" : "Open menu"}
+            aria-expanded={mobileOpen}
+          >
+            <svg
+              xmlns="http://www.w3.org/2000/svg"
+              viewBox="0 0 20 20"
+              fill="currentColor"
+              className="w-5 h-5"
+            >
+              {mobileOpen ? (
+                <path
+                  fillRule="evenodd"
+                  d="M4.28 3.22a.75.75 0 0 0-1.06 1.06L8.94 10l-5.72 5.72a.75.75 0 1 0 1.06 1.06L10 11.06l5.72 5.72a.75.75 0 1 0 1.06-1.06L11.06 10l5.72-5.72a.75.75 0 0 0-1.06-1.06L10 8.94 4.28 3.22Z"
+                  clipRule="evenodd"
+                />
+              ) : (
+                <path
+                  fillRule="evenodd"
+                  d="M2 4.75A.75.75 0 0 1 2.75 4h14.5a.75.75 0 0 1 0 1.5H2.75A.75.75 0 0 1 2 4.75ZM2 10a.75.75 0 0 1 .75-.75h14.5a.75.75 0 0 1 0 1.5H2.75A.75.75 0 0 1 2 10Zm0 5.25a.75.75 0 0 1 .75-.75h14.5a.75.75 0 0 1 0 1.5H2.75a.75.75 0 0 1-.75-.75Z"
+                  clipRule="evenodd"
+                />
+              )}
+            </svg>
+          </button>
         </div>
       </div>
+
+      {/* Mobile drawer */}
+      {mobileOpen && (
+        <div className="md:hidden border-t border-border bg-background">
+          <div className="max-w-7xl mx-auto px-4 py-4 space-y-4">
+            <div className="sm:hidden">
+              <GlobalSearch />
+            </div>
+            <nav className="flex flex-col gap-1 text-base">
+              <Link
+                href="/explore"
+                className={`px-2 py-2 rounded-md ${linkClass("/explore")}`}
+              >
+                Explore
+              </Link>
+              <Link
+                href="/launch"
+                className={`px-2 py-2 rounded-md ${linkClass("/launch", true)}`}
+              >
+                Launch
+              </Link>
+              <Link
+                href="/generator"
+                className={`px-2 py-2 rounded-md ${linkClass("/generator")}`}
+              >
+                Generator
+              </Link>
+            </nav>
+            <div className="sm:hidden pt-2 border-t border-border">
+              <ChainSelector />
+            </div>
+          </div>
+        </div>
+      )}
     </header>
   );
 }

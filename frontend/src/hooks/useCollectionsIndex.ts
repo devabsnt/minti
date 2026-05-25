@@ -3,7 +3,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { useBrowseChain } from "@/providers/ChainProvider";
 import { hasHypersync } from "@/lib/hypersync/client";
-import { withBasePath } from "@/lib/basePath";
 
 /**
  * Global collections index — a periodically-refreshed static snapshot at
@@ -454,21 +453,35 @@ export function collectionWarnings(c: IndexedCollection): CollectionWarning[] {
 /**
  * Collapse duplicate-name collections into one entry per name. The winner is
  * the entry with the highest legitimacy score.
+ *
+ * Hot path — called inside searchIndex which runs on every keystroke +
+ * filter change. We memoize by reference: a fresh `items` array (same
+ * collections array from the snapshot) yields the cached result.
  */
+let dedupeCache: WeakMap<readonly IndexedCollection[], IndexedCollection[]> | null = null;
 export function dedupeByName(items: IndexedCollection[]): IndexedCollection[] {
+  if (!dedupeCache) dedupeCache = new WeakMap();
+  const cached = dedupeCache.get(items);
+  if (cached) return cached;
+
+  // Score every entry once, reuse across the two passes.
+  const scores = new Map<IndexedCollection, number>();
+  for (const c of items) scores.set(c, legitimacyScore(c));
+
   const winners = new Map<string, IndexedCollection>();
-  const keep = [];
   for (const c of items) {
     const key = (c.name || c.symbol || c.address).toLowerCase();
     const incumbent = winners.get(key);
-    if (!incumbent || legitimacyScore(c) > legitimacyScore(incumbent)) {
+    if (!incumbent || (scores.get(c) ?? 0) > (scores.get(incumbent) ?? 0)) {
       winners.set(key, c);
     }
   }
+  const keep: IndexedCollection[] = [];
   for (const c of items) {
     const key = (c.name || c.symbol || c.address).toLowerCase();
     if (winners.get(key) === c) keep.push(c);
   }
+  dedupeCache.set(items, keep);
   return keep;
 }
 
@@ -490,7 +503,7 @@ export function useCollectionsIndex() {
     enabled: !!snapshotPath,
     staleTime: 60 * 60 * 1000, // 1 hour
     queryFn: async (): Promise<CollectionsIndex> => {
-      const resp = await fetch(withBasePath(snapshotPath));
+      const resp = await fetch(snapshotPath);
       if (!resp.ok) {
         throw new Error(`Snapshot fetch failed: ${resp.status}`);
       }

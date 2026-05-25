@@ -1,0 +1,8 @@
+User-agent: *
+Allow: /
+
+# Per-wallet and per-collection pages explode combinatorially. Allowing
+# them is fine but discourage crawling deep into the long tail.
+Disallow: /wallet/
+
+Sitemap: https://minti.art/sitemap.xml

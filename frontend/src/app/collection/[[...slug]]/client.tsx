@@ -21,6 +21,7 @@ import { EvmfsTokenCard } from "@/components/collection/EvmfsTokenCard";
 import { OnChainVerifyPanel } from "@/components/collection/OnChainVerifyPanel";
 import { CollectionWarnings } from "@/components/collection/CollectionWarnings";
 import { HideCollectionButton } from "@/components/collection/HideCollectionButton";
+import { CopyButton } from "@/components/ui/CopyButton";
 import {
   TraitFilter,
   filterIdsBySelection,
@@ -229,13 +230,14 @@ function CollectionPage({
                 </>
               )}
             </h1>
-            <p className="text-xs text-foreground-secondary font-mono">
-              {truncateAddress(collectionAddress, 8)}
+            <p className="text-xs text-foreground-secondary font-mono flex items-center gap-1.5">
+              <span>{truncateAddress(collectionAddress, 8)}</span>
+              <CopyButton value={collectionAddress} label="Copy contract address" />
               {totalSupply > 0 && (
-                <span className="ml-2">&middot; {formatNumber(totalSupply)} items</span>
+                <span className="ml-1">&middot; {formatNumber(totalSupply)} items</span>
               )}
               {isEvmfs && (
-                <span className="ml-2">
+                <span className="ml-1">
                   &middot; by {truncateAddress(evmfsRecord!.creator)}
                 </span>
               )}

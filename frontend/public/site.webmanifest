@@ -1,0 +1,25 @@
+{
+  "name": "minti.art",
+  "short_name": "minti",
+  "description": "Fully on-chain NFT marketplace on Monad. Launch and trade collections stored 100% on chain via EVMFS.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#0a0a0f",
+  "theme_color": "#0a0a0f",
+  "orientation": "portrait-primary",
+  "icons": [
+    {
+      "src": "/mintiSVG.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    },
+    {
+      "src": "/mintiMascot.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}

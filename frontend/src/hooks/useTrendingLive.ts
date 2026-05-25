@@ -2,7 +2,6 @@
 
 import { useQuery } from "@tanstack/react-query";
 import { useBrowseChain } from "@/providers/ChainProvider";
-import { withBasePath } from "@/lib/basePath";
 
 /**
  * Live "trending right now" data. Backed by a static snapshot file refreshed
@@ -64,7 +63,7 @@ export function useTrendingLive(_hours = 6) {
     enabled: !!path,
     staleTime: 5 * 60 * 1000, // 5 min — snapshot only refreshes hourly anyway
     queryFn: async (): Promise<Map<string, number>> => {
-      const resp = await fetch(withBasePath(path));
+      const resp = await fetch(path);
       if (!resp.ok) {
         // Soft-fail: explore page falls back to snapshot's recent24h.
         return new Map();
@@ -92,7 +91,7 @@ export function useTrendingDetailed() {
     enabled: !!path,
     staleTime: 5 * 60 * 1000,
     queryFn: async (): Promise<Map<string, TrendingEntry>> => {
-      const resp = await fetch(withBasePath(path));
+      const resp = await fetch(path);
       if (!resp.ok) return new Map();
       const snap = (await resp.json()) as TrendingSnapshot;
       const out = new Map<string, TrendingEntry>();

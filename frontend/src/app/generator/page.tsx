@@ -1,6 +1,11 @@
-"use client";
-
+import type { Metadata } from "next";
 import Image from "next/image";
+
+export const metadata: Metadata = {
+  title: "NFT Generator (coming soon)",
+  description:
+    "Generative art tool for NFT collections — trait layers, exclusion rules, on-chain RLE rendering, IPFS export.",
+};
 
 export default function GeneratorPage() {
   return (

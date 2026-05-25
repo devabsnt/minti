@@ -1,4 +1,4 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 import { Web3Provider } from "@/providers/Web3Provider";
@@ -18,12 +18,67 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "minti.art — Decentralized NFT Marketplace",
+  metadataBase: new URL("https://minti.art"),
+  title: {
+    default: "minti.art — fully on-chain NFT marketplace",
+    template: "%s · minti.art",
+  },
   description:
-    "Buy, sell, and bid on NFTs across EVM chains. Zero backend, fully on-chain order book. 0.1% protocol fee.",
+    "Launch and trade NFTs with art and metadata stored 100% on chain via EVMFS. Zero backend, fully on-chain order book, 0.1% protocol fee. Monad mainnet.",
+  applicationName: "minti.art",
+  authors: [{ name: "minti" }],
+  keywords: [
+    "NFT marketplace",
+    "Monad",
+    "EVMFS",
+    "on-chain NFT",
+    "ERC-721",
+    "ERC-1155",
+    "decentralized marketplace",
+  ],
   icons: {
     icon: "/mintiSVG.svg",
+    apple: "/mintiMascot.png",
   },
+  openGraph: {
+    type: "website",
+    siteName: "minti.art",
+    url: "https://minti.art",
+    title: "minti.art — fully on-chain NFT marketplace",
+    description:
+      "Launch and trade NFTs stored 100% on chain via EVMFS. Zero backend, fully on-chain order book.",
+    images: [
+      {
+        url: "/mintiMascot.png",
+        width: 512,
+        height: 512,
+        alt: "minti mascot",
+      },
+    ],
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: "minti.art — fully on-chain NFT marketplace",
+    description:
+      "Launch and trade NFTs stored 100% on chain via EVMFS. Zero backend.",
+    images: ["/mintiMascot.png"],
+  },
+  robots: {
+    index: true,
+    follow: true,
+  },
+  manifest: "/site.webmanifest",
+};
+
+/**
+ * Viewport + theme-color. Drives the address-bar tint on mobile browsers
+ * (Chrome on Android, Safari on iOS) so the chrome blends into the dark
+ * page instead of flashing white.
+ */
+export const viewport: Viewport = {
+  themeColor: "#0a0a0f",
+  width: "device-width",
+  initialScale: 1,
 };
 
 export default function RootLayout({
