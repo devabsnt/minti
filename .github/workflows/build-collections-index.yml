@@ -33,6 +33,10 @@ jobs:
     timeout-minutes: 240 # full sweep can be long; manual cap stays safe
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Need enough history for the post-build rebase to find a merge
+          # base when concurrent commits land on main during our 90-min run.
+          fetch-depth: 0
 
       - uses: actions/setup-node@v4
         with:
@@ -61,10 +65,40 @@ jobs:
           NODE_OPTIONS: "--max-old-space-size=7168"
         run: node scripts/build-collections-index.mjs
 
-      - name: Commit snapshot if changed
-        uses: stefanzweifel/git-auto-commit-action@v5
-        with:
-          commit_message: "chore: refresh Monad collections snapshot"
-          file_pattern: frontend/public/data/monad-collections.json
-          commit_user_name: minti-bot
-          commit_user_email: minti-bot@users.noreply.github.com
+      - name: Commit and push snapshot (with rebase retry)
+        # Manual commit+push so we can retry on push race. The 90-min build
+        # often overlaps with the hourly trending cron — the off-the-shelf
+        # auto-commit action doesn't pull-rebase before push, so a concurrent
+        # commit eats this run's output. Loop up to 5 times with rebase
+        # between attempts.
+        run: |
+          set -e
+          git config user.name "minti-bot"
+          git config user.email "minti-bot@users.noreply.github.com"
+          if git diff --quiet --exit-code -- frontend/public/data/monad-collections.json; then
+            echo "No snapshot changes — skipping commit."
+            exit 0
+          fi
+          git add frontend/public/data/monad-collections.json
+          git commit -m "chore: refresh Monad collections snapshot"
+          for attempt in 1 2 3 4 5; do
+            echo "Push attempt $attempt"
+            if git push origin HEAD:main; then
+              echo "Push succeeded on attempt $attempt"
+              exit 0
+            fi
+            echo "Push failed — rebasing onto latest origin/main and retrying"
+            git fetch origin main
+            # Rebase our snapshot commit onto whatever moved on origin. Our
+            # change only touches the snapshot JSON so conflicts are rare;
+            # `-X theirs` here means "our rebasing commits win" on conflict
+            # (git's rebase terminology is inverted vs merge).
+            if ! git rebase -X theirs origin/main; then
+              echo "Rebase failed, aborting"
+              git rebase --abort
+              exit 1
+            fi
+            sleep $((attempt * 2))
+          done
+          echo "All push retries exhausted"
+          exit 1
