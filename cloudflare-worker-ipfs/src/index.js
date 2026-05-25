@@ -100,6 +100,134 @@ async function raceGateways(cid, rest) {
   return await Promise.any(attempts);
 }
 
+// Hosts allowed for the generic /proxy?url= endpoint. We don't accept
+// arbitrary URLs because the worker has bandwidth limits and we don't
+// want to become an open relay. This list covers the centralized
+// metadata hosts that NFT collections on Monad use and that don't send
+// CORS headers themselves.
+const PROXY_ALLOWED_HOST_PATTERNS = [
+  /^([a-z0-9-]+\.)?scatter\.art$/i,
+  /^([a-z0-9-]+\.)?pancakeswap\.com$/i,
+  /^([a-z0-9-]+\.)?lootgo\.app$/i,
+  /^([a-z0-9-]+\.)?codepunks\.fun$/i,
+  /^([a-z0-9-]+\.)?madness\.finance$/i,
+  /^([a-z0-9-]+\.)?wengoods\.io$/i,
+  // S3 / Cloudflare R2 buckets used by various collections
+  /^s3[.-][a-z0-9-]+\.amazonaws\.com$/i,
+  /^[a-z0-9-]+\.s3\.[a-z0-9-]+\.amazonaws\.com$/i,
+  /^[a-z0-9-]+\.r2\.dev$/i,
+  /^[a-z0-9-]+\.r2\.cloudflarestorage\.com$/i,
+  // IPFS gateways that some contracts hardcode in tokenURI
+  /^gateway\.lighthouse\.storage$/i,
+  /^ipfs\.4everland\.io$/i,
+  /^[a-z0-9-]+\.mypinata\.cloud$/i,
+];
+
+function isProxyAllowed(host) {
+  for (const pat of PROXY_ALLOWED_HOST_PATTERNS) {
+    if (pat.test(host)) return true;
+  }
+  return false;
+}
+
+async function handleProxy(req, ctx) {
+  const url = new URL(req.url);
+  const target = url.searchParams.get("url");
+  if (!target) {
+    return new Response('Usage: /proxy?url=<https-url>', {
+      status: 400,
+      headers: { ...CORS_HEADERS, "Content-Type": "text/plain" },
+    });
+  }
+
+  let parsed;
+  try {
+    parsed = new URL(target);
+  } catch {
+    return new Response("Invalid url parameter", {
+      status: 400,
+      headers: { ...CORS_HEADERS, "Content-Type": "text/plain" },
+    });
+  }
+
+  if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
+    return new Response("Only http(s) URLs supported", {
+      status: 400,
+      headers: { ...CORS_HEADERS, "Content-Type": "text/plain" },
+    });
+  }
+
+  if (!isProxyAllowed(parsed.host)) {
+    return new Response(
+      `Host not in allowlist: ${parsed.host}. Open a PR to add it to PROXY_ALLOWED_HOST_PATTERNS.`,
+      {
+        status: 403,
+        headers: { ...CORS_HEADERS, "Content-Type": "text/plain" },
+      },
+    );
+  }
+
+  const cache = caches.default;
+  const cacheKey = new Request(req.url, { method: "GET" });
+  const cached = await cache.match(cacheKey);
+  if (cached) {
+    const headers = new Headers(cached.headers);
+    headers.set("x-cache", "HIT");
+    return new Response(cached.body, {
+      status: cached.status,
+      statusText: cached.statusText,
+      headers,
+    });
+  }
+
+  let upstream;
+  try {
+    upstream = await fetch(target, {
+      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+      cf: { cacheTtl: 60 * 60, cacheEverything: true },
+    });
+  } catch (err) {
+    return new Response(
+      JSON.stringify({ error: "upstream_fetch_failed", message: String(err) }),
+      {
+        status: 502,
+        headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
+      },
+    );
+  }
+
+  if (!upstream.ok) {
+    // Don't cache failures.
+    return new Response(upstream.body, {
+      status: upstream.status,
+      statusText: upstream.statusText,
+      headers: { ...CORS_HEADERS },
+    });
+  }
+
+  const respHeaders = new Headers();
+  for (const k of ["content-type", "content-length", "etag", "last-modified"]) {
+    const v = upstream.headers.get(k);
+    if (v) respHeaders.set(k, v);
+  }
+  // Cache for 1 hour on the edge (way less than IPFS — these are mutable URLs)
+  respHeaders.set("Cache-Control", "public, max-age=3600, s-maxage=3600");
+  respHeaders.set("x-cache", "MISS");
+  for (const [k, v] of Object.entries(CORS_HEADERS)) respHeaders.set(k, v);
+
+  const [forClient, forCache] = upstream.body.tee();
+  const cachedResp = new Response(forCache, {
+    status: 200,
+    headers: respHeaders,
+  });
+  ctx.waitUntil(cache.put(cacheKey, cachedResp));
+
+  return new Response(forClient, {
+    status: 200,
+    headers: respHeaders,
+  });
+}
+
 export default {
   async fetch(req, _env, ctx) {
     if (req.method === "OPTIONS") {
@@ -110,9 +238,17 @@ export default {
     }
 
     const url = new URL(req.url);
+
+    // Generic CORS proxy for whitelisted centralized hosts (S3 buckets,
+    // Pancakeswap NFT API, scatter.art, etc.) — these contracts hardcode
+    // metadata URLs to hosts that don't send CORS headers.
+    if (url.pathname === "/proxy" || url.pathname === "/proxy/") {
+      return handleProxy(req, ctx);
+    }
+
     const parsed = parsePath(url);
     if (!parsed) {
-      return new Response("Usage: /ipfs/<cid>/<path>", {
+      return new Response("Usage: /ipfs/<cid>/<path> or /proxy?url=...", {
         status: 400,
         headers: { ...CORS_HEADERS, "Content-Type": "text/plain" },
       });

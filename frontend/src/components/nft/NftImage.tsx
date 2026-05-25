@@ -16,10 +16,29 @@ interface NftImageProps {
   priority?: boolean;
 }
 
+// Hosts that block cross-origin image loads via referrer/CORP/etc. We
+// route their image URLs through our worker's /proxy endpoint so they
+// render. The worker has the corresponding host allowlist.
+const HOSTS_NEEDING_PROXY = [
+  /^([a-z0-9-]+\.)?scatter\.art$/i,
+  /^([a-z0-9-]+\.)?pancakeswap\.com$/i,
+  /^([a-z0-9-]+\.)?lootgo\.app$/i,
+  /^([a-z0-9-]+\.)?codepunks\.fun$/i,
+  /^([a-z0-9-]+\.)?madness\.finance$/i,
+  /^([a-z0-9-]+\.)?wengoods\.io$/i,
+  /^s3[.-][a-z0-9-]+\.amazonaws\.com$/i,
+  /^[a-z0-9-]+\.s3\.[a-z0-9-]+\.amazonaws\.com$/i,
+  /^[a-z0-9-]+\.r2\.dev$/i,
+  /^gateway\.lighthouse\.storage$/i,
+];
+
 /**
- * Rewrite ANY IPFS gateway URL to our edge-cached proxy. The proxy races
+ * Rewrite IPFS gateway URLs to our edge-cached proxy. The proxy races
  * all configured gateways internally on cold reads and serves cache hits
- * in <50ms — way faster than the browser doing serial gateway fallback.
+ * in <50ms.
+ *
+ * For non-IPFS image URLs on hosts that block CORS, also route through
+ * the proxy's /proxy?url= endpoint so `<img>` can load them.
  *
  * Falls back to ipfs.io path-style when the proxy is unset (e.g. local
  * dev without the worker deployed).
@@ -34,6 +53,18 @@ function rewriteIpfsUrl(url: string): string {
   // Path-style pattern: https://<host>/ipfs/<cid>/path
   const pth = url.match(/^https?:\/\/[^/]+\/ipfs\/([^/?#]+)(\/[^?#]*)?(\?[^#]*)?$/);
   if (pth) return `${base}${pth[1]}${pth[2] || ""}${pth[3] || ""}`;
+
+  // Centralized hosts that need CORS proxying for `<img>` to work
+  try {
+    const host = new URL(url).host;
+    if (IPFS_PROXY_BASE && HOSTS_NEEDING_PROXY.some((re) => re.test(host))) {
+      const root = IPFS_PROXY_BASE.replace(/\/ipfs\/?$/, "");
+      return `${root}/proxy?url=${encodeURIComponent(url)}`;
+    }
+  } catch {
+    // Not a valid URL — pass through unchanged
+  }
+
   return url;
 }
 

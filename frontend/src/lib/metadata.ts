@@ -1,44 +1,114 @@
-import { IPFS_GATEWAYS } from "@/config/constants";
+import { IPFS_GATEWAYS, IPFS_PROXY_BASE } from "@/config/constants";
 import type { NftMetadata } from "@/types/nft";
 
 /**
- * Pull a `(cid, path)` pair out of any IPFS-shaped URL. We don't trust
- * URL shape alone because broken contracts return URIs like
- * `ipfs://gateway/ipfs/<real-cid>/<path>` where the literal token after
- * `ipfs://` is "gateway", not a CID. Naive parsing would produce
- * `https://ipfs.io/ipfs/gateway/ipfs/<real-cid>/<path>` which 502s.
+ * Generic CORS-bypassing proxy. The IPFS cache worker also exposes a
+ * `/proxy?url=…` endpoint for whitelisted centralized hosts (S3, scatter.art,
+ * Pancakeswap NFT API, etc.) that don't send CORS headers. Without this,
+ * those collections' metadata can never be fetched from the browser.
  *
- * Strategy: find the LAST CID-shaped substring (`Qm…` or `baf…`) in the
- * URI. Whatever follows it is the path. This handles every variant we've
- * seen in the wild:
- *   - ipfs://<cid>/<path>
- *   - https://<cid>.ipfs.<host>/<path>            subdomain
- *   - https://<host>/ipfs/<cid>/<path>            path-style
- *   - ipfs://gateway/ipfs/<cid>/<path>            malformed nested
- *   - https://some-gateway/<cid>                  bare
+ * Hosts must be in the worker's PROXY_ALLOWED_HOST_PATTERNS list — see
+ * `cloudflare-worker-ipfs/src/index.js`.
+ */
+const CORS_HOSTS_NEEDING_PROXY = [
+  /^([a-z0-9-]+\.)?scatter\.art$/i,
+  /^([a-z0-9-]+\.)?pancakeswap\.com$/i,
+  /^([a-z0-9-]+\.)?lootgo\.app$/i,
+  /^([a-z0-9-]+\.)?codepunks\.fun$/i,
+  /^([a-z0-9-]+\.)?madness\.finance$/i,
+  /^([a-z0-9-]+\.)?wengoods\.io$/i,
+  /^s3[.-][a-z0-9-]+\.amazonaws\.com$/i,
+  /^[a-z0-9-]+\.s3\.[a-z0-9-]+\.amazonaws\.com$/i,
+  /^[a-z0-9-]+\.r2\.dev$/i,
+  /^gateway\.lighthouse\.storage$/i,
+];
+
+function shouldUseCorsProxy(url: string): boolean {
+  try {
+    const host = new URL(url).host;
+    return CORS_HOSTS_NEEDING_PROXY.some((re) => re.test(host));
+  } catch {
+    return false;
+  }
+}
+
+function wrapInCorsProxy(url: string): string {
+  if (!IPFS_PROXY_BASE) return url;
+  // Derive the proxy root (strip the trailing /ipfs/)
+  const root = IPFS_PROXY_BASE.replace(/\/ipfs\/?$/, "");
+  return `${root}/proxy?url=${encodeURIComponent(url)}`;
+}
+
+/**
+ * Pull a `(cid, path)` pair out of any IPFS-shaped URL.
  *
- * Returns null if no CID can be found.
+ * Strategy (in order):
+ *   1. Direct `ipfs://<cid>/<path>` extraction. Fast path for the
+ *      common case where the URI is well-formed. We accept anything
+ *      after the scheme as the CID — even if it doesn't strictly match
+ *      a known CID prefix — because broken contracts that return
+ *      `ipfs://gateway/...` would otherwise leak through to a 404.
+ *   2. Subdomain pattern `https://<cid>.ipfs.<host>/<path>`.
+ *   3. Path pattern `https://<host>/ipfs/<cid>/<path>`.
+ *   4. Fallback: search for the LAST CID-shaped substring (`Qm…` or
+ *      `baf…`) anywhere in the URI. Handles malformed nested forms like
+ *      `ipfs://gateway/ipfs/<real-cid>/<path>`.
+ *
+ * Step 4 uses a permissive CID pattern. CIDv1-base32-sha256 is 59 chars,
+ * so we accept `baf[a-z2-7]{52,}`. A 44-char Qm-prefix CIDv0 is also
+ * accepted. Older too-strict patterns (>60 chars) were rejecting valid
+ * CIDs and causing `fetch("ipfs://…")` calls the browser can't handle.
  */
 const CID_PATTERN =
-  /(Qm[1-9A-HJ-NP-Za-km-z]{44}|baf[ybek][a-z2-7]{56,})/g;
+  /(Qm[1-9A-HJ-NP-Za-km-z]{44}|baf[a-z2-7]{52,})/gi;
 
-function parseIpfsUri(uri: string): { cid: string; path: string } | null {
-  if (!uri) return null;
+function looksLikeCid(s: string): boolean {
+  if (!s) return false;
+  return /^(Qm[1-9A-HJ-NP-Za-km-z]{44}|baf[a-z2-7]{52,})$/i.test(s);
+}
 
-  // Special case: ipfs:// with no recognizable CID (e.g. ipfs://gateway/...)
-  // still gets the CID-search treatment below — bare `ipfs://` URIs without
-  // any CID at all are unfixable.
-
-  // Find the LAST CID in the URI. Anything after it is path.
+function findLastCid(uri: string): { idx: number; cid: string } | null {
   let last: { idx: number; cid: string } | null = null;
   let match: RegExpExecArray | null;
   CID_PATTERN.lastIndex = 0;
   while ((match = CID_PATTERN.exec(uri)) !== null) {
     last = { idx: match.index, cid: match[1] };
   }
+  return last;
+}
+
+function parseIpfsUri(uri: string): { cid: string; path: string } | null {
+  if (!uri) return null;
+
+  // 1. ipfs:// direct
+  if (uri.startsWith("ipfs://")) {
+    const rest = uri.slice("ipfs://".length);
+    const slash = rest.indexOf("/");
+    const cidGuess = slash >= 0 ? rest.slice(0, slash) : rest;
+    const pathGuess = slash >= 0 ? rest.slice(slash) : "";
+    if (looksLikeCid(cidGuess)) {
+      return { cid: cidGuess, path: pathGuess };
+    }
+    // Malformed (e.g. ipfs://gateway/ipfs/<cid>/…) — fall through to search
+  }
+
+  // 2. Subdomain form: https://<cid>.ipfs.<host>/<path>
+  const sub = uri.match(/^https?:\/\/([^./]+)\.ipfs\.[^/]+(\/.*)?$/);
+  if (sub && looksLikeCid(sub[1])) {
+    return { cid: sub[1], path: sub[2] || "" };
+  }
+
+  // 3. Path form: https://<host>/ipfs/<cid>/<path>
+  const pth = uri.match(/^https?:\/\/[^/]+\/ipfs\/([^/?#]+)(\/[^?#]*)?(\?[^#]*)?$/);
+  if (pth && looksLikeCid(pth[1])) {
+    return { cid: pth[1], path: (pth[2] || "") + (pth[3] || "") };
+  }
+
+  // 4. Fallback: find ANY CID anywhere in the URI (handles malformed
+  // nested forms like ipfs://gateway/ipfs/<real-cid>/<path>).
+  const last = findLastCid(uri);
   if (last) {
     const after = uri.slice(last.idx + last.cid.length);
-    // Strip any leading slash off the path (we'll add it back when joining)
     const path = after.startsWith("/") ? after : after ? "/" + after : "";
     return { cid: last.cid, path };
   }
@@ -62,9 +132,12 @@ export function resolveUri(uri: string, gatewayIndex = 0): string {
 async function fetchWithGatewayFallback(uri: string): Promise<string> {
   const ipfs = parseIpfsUri(uri);
 
-  // Non-IPFS URI — just fetch directly.
+  // Non-IPFS URI — just fetch directly. If the host is known to block
+  // CORS, route through our proxy worker so the browser can read it.
   if (!ipfs) {
-    const response = await fetch(resolveUri(uri), {
+    const resolved = resolveUri(uri);
+    const target = shouldUseCorsProxy(resolved) ? wrapInCorsProxy(resolved) : resolved;
+    const response = await fetch(target, {
       signal: AbortSignal.timeout(10_000),
     });
     if (!response.ok) {
