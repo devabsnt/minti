@@ -2,25 +2,47 @@ import { IPFS_GATEWAYS } from "@/config/constants";
 import type { NftMetadata } from "@/types/nft";
 
 /**
- * Pull a `(cid, path)` pair out of any IPFS-shaped URL. Matches:
+ * Pull a `(cid, path)` pair out of any IPFS-shaped URL. We don't trust
+ * URL shape alone because broken contracts return URIs like
+ * `ipfs://gateway/ipfs/<real-cid>/<path>` where the literal token after
+ * `ipfs://` is "gateway", not a CID. Naive parsing would produce
+ * `https://ipfs.io/ipfs/gateway/ipfs/<real-cid>/<path>` which 502s.
+ *
+ * Strategy: find the LAST CID-shaped substring (`Qm…` or `baf…`) in the
+ * URI. Whatever follows it is the path. This handles every variant we've
+ * seen in the wild:
  *   - ipfs://<cid>/<path>
- *   - https://<cid>.ipfs.<host>/<path>            (subdomain style)
- *   - https://<host>/ipfs/<cid>/<path>            (path style)
- * Returns null if the URL isn't recognisable as IPFS.
+ *   - https://<cid>.ipfs.<host>/<path>            subdomain
+ *   - https://<host>/ipfs/<cid>/<path>            path-style
+ *   - ipfs://gateway/ipfs/<cid>/<path>            malformed nested
+ *   - https://some-gateway/<cid>                  bare
+ *
+ * Returns null if no CID can be found.
  */
+const CID_PATTERN =
+  /(Qm[1-9A-HJ-NP-Za-km-z]{44}|baf[ybek][a-z2-7]{56,})/g;
+
 function parseIpfsUri(uri: string): { cid: string; path: string } | null {
   if (!uri) return null;
-  if (uri.startsWith("ipfs://")) {
-    const rest = uri.slice("ipfs://".length);
-    const idx = rest.indexOf("/");
-    return idx >= 0
-      ? { cid: rest.slice(0, idx), path: rest.slice(idx) }
-      : { cid: rest, path: "" };
+
+  // Special case: ipfs:// with no recognizable CID (e.g. ipfs://gateway/...)
+  // still gets the CID-search treatment below — bare `ipfs://` URIs without
+  // any CID at all are unfixable.
+
+  // Find the LAST CID in the URI. Anything after it is path.
+  let last: { idx: number; cid: string } | null = null;
+  let match: RegExpExecArray | null;
+  CID_PATTERN.lastIndex = 0;
+  while ((match = CID_PATTERN.exec(uri)) !== null) {
+    last = { idx: match.index, cid: match[1] };
   }
-  const sub = uri.match(/^https?:\/\/([^./]+)\.ipfs\.[^/]+(\/.*)?$/);
-  if (sub) return { cid: sub[1], path: sub[2] || "" };
-  const pth = uri.match(/^https?:\/\/[^/]+\/ipfs\/([^/?#]+)(\/[^?#]*)?(\?[^#]*)?$/);
-  if (pth) return { cid: pth[1], path: (pth[2] || "") + (pth[3] || "") };
+  if (last) {
+    const after = uri.slice(last.idx + last.cid.length);
+    // Strip any leading slash off the path (we'll add it back when joining)
+    const path = after.startsWith("/") ? after : after ? "/" + after : "";
+    return { cid: last.cid, path };
+  }
+
   return null;
 }
 
@@ -150,20 +172,58 @@ function decodeDataUri(uri: string): string {
 }
 
 function parseMetadataJson(jsonString: string, tokenId: bigint): NftMetadata {
-
   const raw = JSON.parse(jsonString);
-  const imageRaw: string = raw.image || raw.image_url || raw.image_data || "";
+
+  // Prefer `image`/`image_url`. Fall back to `image_data` which per the
+  // OpenSea spec is raw SVG/HTML body — wrap it in a data: URI so the
+  // browser can render it from `<img src=>`. Without this wrap, on-chain
+  // SVG collections (NFTs2Me, many "100% on-chain" launches) render as
+  // 404s and their cards get pruned by our "no image = hide" rule.
+  let image = raw.image || raw.image_url || "";
+  if (!image && raw.image_data) {
+    image = svgToDataUri(raw.image_data);
+  } else if (image && looksLikeRawSvgOrHtml(image)) {
+    // Some contracts misuse `image` for raw SVG/HTML body. Wrap if so.
+    image = svgToDataUri(image);
+  }
 
   return {
     name: raw.name || `#${tokenId.toString()}`,
     description: raw.description || "",
-    image: resolveUri(imageRaw),
-    rawImageUri: imageRaw.startsWith("ipfs://") || imageRaw.startsWith("ar://") ? imageRaw : undefined,
+    image: image ? resolveUri(image) : "",
+    rawImageUri:
+      typeof image === "string" && (image.startsWith("ipfs://") || image.startsWith("ar://"))
+        ? image
+        : undefined,
     animationUrl: raw.animation_url ? resolveUri(raw.animation_url) : undefined,
     attributes: raw.attributes || [],
     externalUrl: raw.external_url,
     raw,
   };
+}
+
+function looksLikeRawSvgOrHtml(s: string): boolean {
+  const trimmed = s.trim().slice(0, 64).toLowerCase();
+  return (
+    trimmed.startsWith("<svg") ||
+    trimmed.startsWith("<?xml") ||
+    trimmed.startsWith("<html") ||
+    trimmed.startsWith("<!doctype")
+  );
+}
+
+function svgToDataUri(body: string): string {
+  // If the caller already wrapped it, pass through.
+  if (body.startsWith("data:")) return body;
+  // Base64 encode to handle any character safely.
+  // btoa requires Latin-1 — use URL encoding + unescape for unicode safety.
+  try {
+    const utf8 = unescape(encodeURIComponent(body));
+    return `data:image/svg+xml;base64,${btoa(utf8)}`;
+  } catch {
+    // Fallback to URL-encoded utf-8 (works for ASCII-only SVGs)
+    return `data:image/svg+xml;utf8,${encodeURIComponent(body)}`;
+  }
 }
 
 // ─── BaseURI extrapolation ─────────────────────────────────────────

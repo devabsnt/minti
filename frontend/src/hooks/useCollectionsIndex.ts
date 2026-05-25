@@ -233,7 +233,7 @@ export interface CollectionsIndex {
 
 /** Patterns associated with scam / airdrop-promo collection names. */
 const SPAM_NAME_RE =
-  /\$|🚀|💎|🎁|💰|⭐|free|claim|airdrop|reward|bonus|www\.|https?:|\.com|\.io|\.xyz\b|\.eth\b|t\.me\/|telegram|discord\.gg/i;
+  /\$|🚀|💎|🎁|💰|⭐|🔥|✨|🎉|free\b|claim|airdrop|reward|bonus|voucher|coupon|prize|winner|\bwin\b|giveaway|whitelist\b|\bwl\b|mystery\s*box|gift\s*card|redeem|\bdrop\b|earn\b|payout|cashback|invite\b|presale|\bIDO\b|\bICO\b|www\.|https?:|\.com|\.io|\.xyz\b|\.eth\b|\.fi\b|\.app\b|t\.me\/|telegram|discord\.gg|\bvisit\b|\bsign\s*up\b|\bsignup\b|\bUSDC\b|\bUSDT\b|\bDAI\b|\bWETH\b|\bWBTC\b|\bUSD\b\s+(voucher|gift|reward|bonus|claim|drop|prize|whitelist)/i;
 
 /**
  * Patterns that suggest the contract is a DeFi/infra NFT rather than a
@@ -348,6 +348,26 @@ export function isLikelyReal(c: IndexedCollection): boolean {
   if (c.totalSupply) {
     const supply = Number(c.totalSupply);
     if (supply > 0 && holders / supply < 0.03) return false;
+  }
+
+  // Airdrop spam fingerprint: many holders, very few non-mint transfers,
+  // ALL minted by one wallet (single sender). This catches USDC-voucher
+  // and similar mass-mint scams that would otherwise slip past the
+  // ≥100-holders bypass below. Real organic mints have many minters
+  // (each user calling mint) so even with no secondary, senders > 1.
+  //
+  // NOTE: uniqueSenders counts non-zero `from` addresses. In a true
+  // airdrop the same deployer wallet sends to every recipient → senders
+  // stays at 1 even with thousands of recipients.
+  if (
+    hasSenderData &&
+    hasMintData &&
+    senders <= 1 &&
+    holders >= 50 &&
+    transfers > 0 &&
+    mints / transfers >= 0.95
+  ) {
+    return false;
   }
 
   // Engagement floor — but only for SMALL collections. Once a collection

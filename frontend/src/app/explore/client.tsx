@@ -135,8 +135,9 @@ export function ExploreClient() {
         const symbol = (c.symbol || "").toLowerCase();
         if (name && registryNames.has(name)) return false;
         if (symbol && registryNames.has(symbol)) return false;
-        // 3. User-hidden in IndexedDB
-        if (isHidden(c.address)) return false;
+        // 3. User-hidden in IndexedDB — bypassed when "Show hidden" is on
+        // so the user can recover from an accidental hide click.
+        if (!showAll && isHidden(c.address)) return false;
         // 4. Spam heuristic — opt-out via the show-all toggle
         if (!showAll && !isLikelyReal(c)) return false;
         return true;
@@ -518,12 +519,12 @@ function LongTailCard({
     collection.is1155 && !collection.is721,
   );
 
-  // If metadata failed (all gateways exhausted) or completed without an
-  // image, hide the card entirely. Dead/abandoned collections are filtered
-  // out of the grid, layout stays clean. Loading state still renders the
-  // card (skeleton appears until the fetch resolves).
+  // Only hide on a hard error (every gateway exhausted). Cards that just
+  // happen to have no image yet still render with the "?" placeholder
+  // instead of vanishing — otherwise legitimate on-chain SVG collections
+  // and freshly-minted ones get pruned the moment metadata resolves
+  // empty.
   if (isError) return null;
-  if (!isLoading && metadata && !metadata.image) return null;
 
   const transferCount = collection.transferCount ?? 0;
   const uniqueHolders = collection.uniqueHolders ?? 0;
@@ -606,18 +607,16 @@ function TrendingHeroCard({
   const symbol = collection.symbol || "";
   const sampleTokenId =
     collection.lowestTokenId != null ? BigInt(collection.lowestTokenId) : 1n;
-  const { data: metadata, isError, isLoading } = useNftMetadata(
+  const { data: metadata, isError } = useNftMetadata(
     collection.address as `0x${string}`,
     sampleTokenId,
     collection.is1155 && !collection.is721,
   );
 
-  // Same "is the collection real / has resolvable content" check the
-  // long-tail cards do. If metadata can't be fetched at all (all gateways
-  // failed) or completed with no image, this is a dead/broken contract —
-  // don't put it at the top of trending.
+  // Only hide on hard error. NftImage falls back to a "?" placeholder for
+  // empty-image cases so freshly-minted / on-chain SVG collections still
+  // appear in trending while their metadata resolves.
   if (isError) return null;
-  if (!isLoading && metadata && !metadata.image) return null;
 
   const m = momentum(collection);
   const momentumPct = m != null ? Math.round(m * 100) : null;
