@@ -180,29 +180,60 @@ async function handleProxy(req, ctx) {
     });
   }
 
+  // Mimic a real browser request. Scatter and similar hosts 502/403 on
+  // bare-fetch User-Agents (Cloudflare worker's default is
+  // "Cloudflare-Workers/…", which is on a lot of anti-scraping blocklists).
+  // Sending realistic Accept/Referer/UA gets past most basic gates.
+  const upstreamHeaders = {
+    "User-Agent":
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    Accept: "application/json, text/plain, image/*, */*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+    Referer: `${parsed.protocol}//${parsed.host}/`,
+  };
+
   let upstream;
   try {
     upstream = await fetch(target, {
       signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
-      cf: { cacheTtl: 60 * 60, cacheEverything: true },
+      cf: { cacheTtl: 60 * 60 * 24, cacheEverything: true },
+      headers: upstreamHeaders,
     });
   } catch (err) {
-    return new Response(
+    // Soft-cache the fetch failure for 60s so we don't immediately re-hammer
+    // a downed upstream when 30 cards mount at once.
+    const errResp = new Response(
       JSON.stringify({ error: "upstream_fetch_failed", message: String(err) }),
       {
         status: 502,
-        headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
+        headers: {
+          ...CORS_HEADERS,
+          "Content-Type": "application/json",
+          "Cache-Control": "public, max-age=60, s-maxage=60",
+        },
       },
     );
+    ctx.waitUntil(cache.put(cacheKey, errResp.clone()));
+    return errResp;
   }
 
   if (!upstream.ok) {
-    // Don't cache failures.
-    return new Response(upstream.body, {
+    // Soft-cache 5xx for 60s — same reason as the throw branch above. 4xx
+    // is a permanent client error from the upstream's POV; cache it for an
+    // hour so we don't keep retrying obviously-missing tokens.
+    const negTtl = upstream.status >= 500 ? 60 : 3600;
+    const negResp = new Response(upstream.body, {
       status: upstream.status,
       statusText: upstream.statusText,
-      headers: { ...CORS_HEADERS },
+      headers: {
+        ...CORS_HEADERS,
+        "Cache-Control": `public, max-age=${negTtl}, s-maxage=${negTtl}`,
+      },
     });
+    if (negTtl > 0) {
+      ctx.waitUntil(cache.put(cacheKey, negResp.clone()));
+    }
+    return negResp;
   }
 
   const respHeaders = new Headers();
@@ -210,8 +241,10 @@ async function handleProxy(req, ctx) {
     const v = upstream.headers.get(k);
     if (v) respHeaders.set(k, v);
   }
-  // Cache for 1 hour on the edge (way less than IPFS — these are mutable URLs)
-  respHeaders.set("Cache-Control", "public, max-age=3600, s-maxage=3600");
+  // 7 days. Post-reveal NFT metadata is effectively immutable. If a
+  // collection updates its baseURI later, callers will be hitting a new
+  // URL anyway, so cache-key isolation handles it.
+  respHeaders.set("Cache-Control", "public, max-age=604800, s-maxage=604800");
   respHeaders.set("x-cache", "MISS");
   for (const [k, v] of Object.entries(CORS_HEADERS)) respHeaders.set(k, v);
 

@@ -162,11 +162,29 @@ async function fetchWithGatewayFallback(uri: string): Promise<string> {
 
   const ipfs = parseIpfsUri(uri);
 
-  // Non-IPFS URI — just fetch directly. If the host is known to block
-  // CORS, route through our proxy worker so the browser can read it.
+  // Non-IPFS URI — try direct first. Most modern NFT metadata hosts opt
+  // into CORS (they want every marketplace frontend to read their JSON),
+  // so going direct is fast and avoids the worker's rate-limited path
+  // entirely. Only fall back to the proxy if the direct fetch errors —
+  // either a hard CORS block (TypeError: Failed to fetch) or an upstream
+  // status the host returned itself.
   if (!ipfs) {
     const resolved = resolveUri(uri);
-    const target = shouldUseCorsProxy(resolved) ? wrapInCorsProxy(resolved) : resolved;
+    try {
+      const direct = await fetch(resolved, {
+        signal: AbortSignal.timeout(8_000),
+      });
+      if (direct.ok) return direct.text();
+      // 4xx/5xx from upstream itself — proxy won't help either (it'll
+      // just forward the same status). Bail.
+      throw new Error(`Failed to fetch metadata: ${direct.status}`);
+    } catch (err) {
+      // CORS / network / timeout. Try the proxy if we have one AND the
+      // host is one we've configured for fallback. Hosts not in the
+      // list just bubble the error up.
+      if (!IPFS_PROXY_BASE || !shouldUseCorsProxy(resolved)) throw err;
+    }
+    const target = wrapInCorsProxy(resolved);
     const response = await fetch(target, {
       signal: AbortSignal.timeout(10_000),
     });

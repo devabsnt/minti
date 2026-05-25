@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useCallback } from "react";
-import { IPFS_GATEWAYS, IPFS_PROXY_BASE } from "@/config/constants";
+import { IPFS_GATEWAYS } from "@/config/constants";
 import { resolveUri, toCanonicalIpfsUri } from "@/lib/metadata";
 
 interface NftImageProps {
@@ -16,65 +16,29 @@ interface NftImageProps {
   priority?: boolean;
 }
 
-// Hosts that block cross-origin image loads via referrer/CORP/etc. We
-// route their image URLs through our worker's /proxy endpoint so they
-// render. The worker has the corresponding host allowlist.
-const HOSTS_NEEDING_PROXY = [
-  /^([a-z0-9-]+\.)?scatter\.art$/i,
-  /^([a-z0-9-]+\.)?pancakeswap\.com$/i,
-  /^([a-z0-9-]+\.)?lootgo\.app$/i,
-  /^([a-z0-9-]+\.)?codepunks\.fun$/i,
-  /^([a-z0-9-]+\.)?madness\.finance$/i,
-  /^([a-z0-9-]+\.)?wengoods\.io$/i,
-  /^s3[.-][a-z0-9-]+\.amazonaws\.com$/i,
-  /^[a-z0-9-]+\.s3\.[a-z0-9-]+\.amazonaws\.com$/i,
-  /^[a-z0-9-]+\.r2\.dev$/i,
-  /^gateway\.lighthouse\.storage$/i,
-];
-
 /**
- * Rewrite ANY image URL to a browser-loadable HTTPS URL. Routes:
+ * Rewrite an image URL to a browser-loadable form. `<img>` rendering is
+ * NOT subject to CORS — the browser just paints the bytes — so the only
+ * URLs we touch here are the ones the browser can't natively load:
  *
- *   - data: / blob: → unchanged (browser handles natively)
- *   - ipfs:// → public IPFS gateway (IPFS_GATEWAYS[0])
+ *   - data: / blob: → unchanged
+ *   - ipfs:// → public gateway (IPFS_GATEWAYS[0])
  *   - ar:// → arweave.net
- *   - Subdomain / path-style gateway URL → unchanged (already a public gateway)
- *   - Centralized CORS-blocked host → worker `/proxy?url=...` (the worker's
- *     only remaining job)
- *   - Anything else → unchanged
+ *   - anything else → unchanged. The browser handles cross-origin image
+ *     display fine without a proxy; previous worker rewrites here just
+ *     added a rate-limited hop in front of hosts that work direct.
  */
 function rewriteIpfsUrl(url: string): string {
   if (!url) return url;
-
   if (url.startsWith("data:") || url.startsWith("blob:")) return url;
 
-  const ipfsGateway = IPFS_GATEWAYS[0];
-
-  // ipfs:// or ipfs:/ (single slash — broken but seen in the wild)
   if (url.startsWith("ipfs://") || url.startsWith("ipfs:/")) {
     const stripped = url.replace(/^ipfs:\/{1,2}/i, "");
-    return `${ipfsGateway}${stripped}`;
+    return `${IPFS_GATEWAYS[0]}${stripped}`;
   }
 
   if (url.startsWith("ar://")) {
     return "https://arweave.net/" + url.slice("ar://".length);
-  }
-
-  // Subdomain / path-style gateway URLs come in CORS-clean already.
-  // Don't rewrite — let the browser hit them directly so its cache works
-  // and so a 502 from one gateway doesn't bring down the whole grid.
-  if (/^https?:\/\/[^./]+\.ipfs\.[^/]+/.test(url)) return url;
-  if (/^https?:\/\/[^/]+\/ipfs\//.test(url)) return url;
-
-  // Centralized CORS-blocked host → worker /proxy?url=
-  try {
-    const host = new URL(url).host;
-    if (IPFS_PROXY_BASE && HOSTS_NEEDING_PROXY.some((re) => re.test(host))) {
-      const root = IPFS_PROXY_BASE.replace(/\/ipfs\/?$/, "");
-      return `${root}/proxy?url=${encodeURIComponent(url)}`;
-    }
-  } catch {
-    // Not a valid URL — pass through unchanged
   }
 
   return url;
