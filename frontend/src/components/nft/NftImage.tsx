@@ -2,7 +2,7 @@
 
 import { useState, useCallback } from "react";
 import { IPFS_GATEWAYS, IPFS_PROXY_BASE } from "@/config/constants";
-import { resolveUri } from "@/lib/metadata";
+import { resolveUri, toCanonicalIpfsUri } from "@/lib/metadata";
 
 interface NftImageProps {
   src: string;
@@ -101,8 +101,13 @@ export function NftImage({
   const [allFailed, setAllFailed] = useState(false);
   const [loaded, setLoaded] = useState(false);
 
+  // If rawUri isn't already ipfs://, try to extract a CID from src so we
+  // can still step across gateways when the JSON hardcoded a gateway URL.
+  const ipfsUri =
+    rawUri && rawUri.startsWith("ipfs://") ? rawUri : toCanonicalIpfsUri(src);
+
   const handleError = useCallback(() => {
-    if (rawUri && rawUri.startsWith("ipfs://")) {
+    if (ipfsUri) {
       const nextIdx = gatewayIdx + 1;
       if (nextIdx < IPFS_GATEWAYS.length) {
         setGatewayIdx(nextIdx);
@@ -111,16 +116,18 @@ export function NftImage({
       }
     }
     setAllFailed(true);
-  }, [rawUri, gatewayIdx]);
+  }, [ipfsUri, gatewayIdx]);
 
-  // Pick the source URL. Cold path: route through the cached proxy
-  // (rewriteIpfsUrl handles every gateway URL shape). On <img>-error we
-  // step through IPFS_GATEWAYS as a defensive fallback.
-  const baseSrc =
-    rawUri && rawUri.startsWith("ipfs://") && gatewayIdx > 0
-      ? resolveUri(rawUri, gatewayIdx)
-      : src;
-  const currentSrc = rewriteIpfsUrl(baseSrc);
+  // Cold path: route through the cached worker proxy (gatewayIdx 0).
+  // On <img>-error we step gatewayIdx forward and resolve to that
+  // gateway DIRECTLY — skipping rewriteIpfsUrl, which would rewrite us
+  // back to the worker and defeat the fallback.
+  let currentSrc: string;
+  if (ipfsUri && gatewayIdx > 0) {
+    currentSrc = resolveUri(ipfsUri, gatewayIdx);
+  } else {
+    currentSrc = rewriteIpfsUrl(src);
+  }
 
   if (!src || allFailed) {
     return (

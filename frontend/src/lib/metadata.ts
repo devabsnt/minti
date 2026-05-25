@@ -129,6 +129,21 @@ export function resolveUri(uri: string, gatewayIndex = 0): string {
   return uri;
 }
 
+/**
+ * Normalize ANY IPFS-shaped URL to canonical `ipfs://<cid>/<path>`. Lets
+ * <img> consumers carry the CID through error fallback so they can step
+ * across gateways even when the metadata JSON returned a hardcoded
+ * gateway URL instead of `ipfs://`. Returns undefined for non-IPFS URLs.
+ */
+export function toCanonicalIpfsUri(uri: string): string | undefined {
+  if (!uri) return undefined;
+  if (uri.startsWith("ipfs://")) return uri;
+  if (uri.startsWith("ar://")) return uri;
+  const parsed = parseIpfsUri(uri);
+  if (parsed) return `ipfs://${parsed.cid}${parsed.path}`;
+  return undefined;
+}
+
 async function fetchWithGatewayFallback(uri: string): Promise<string> {
   // BELT-AND-SUSPENDERS: parseIpfsUri should catch every ipfs:/* form,
   // but if it ever returns null for one we still must not call
@@ -280,10 +295,10 @@ function parseMetadataJson(jsonString: string, tokenId: bigint): NftMetadata {
     name: raw.name || `#${tokenId.toString()}`,
     description: raw.description || "",
     image: image ? resolveUri(image) : "",
-    rawImageUri:
-      typeof image === "string" && (image.startsWith("ipfs://") || image.startsWith("ar://"))
-        ? image
-        : undefined,
+    // Normalize to canonical ipfs:// so NftImage can step across gateways
+    // on error — even when the JSON hardcoded a 4everland/dweb URL whose
+    // specific gateway is 502ing today.
+    rawImageUri: typeof image === "string" ? toCanonicalIpfsUri(image) : undefined,
     animationUrl: raw.animation_url ? resolveUri(raw.animation_url) : undefined,
     attributes: raw.attributes || [],
     externalUrl: raw.external_url,
