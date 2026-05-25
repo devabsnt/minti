@@ -1,4 +1,4 @@
-import type { ChainSource } from "./source.js";
+import type { ChainSource, ChainLog } from "./source.js";
 import {
   TRANSFER_TOPIC,
   ingestTransferLogs,
@@ -49,28 +49,27 @@ function estimateTimestamp(blockNumber: number): Date {
   return new Date(GENESIS_TIME + blockNumber * MONAD_AVG_BLOCK_MS);
 }
 
-async function processChunk(
+/** RPC fetch only — no DB write. Returns the raw logs for the wave loop
+ * to aggregate and persist serially. */
+async function fetchChunk(
   source: ChainSource,
   fromBlock: number,
   toBlock: number,
-): Promise<{ activityRows: number; collectionsTouched: number; logCount: number }> {
-  const logs = await source.getLogs({
+): Promise<ChainLog[]> {
+  return source.getLogs({
     fromBlock,
     toBlock,
     eventSignatures: [TRANSFER_TOPIC],
   });
+}
 
-  // Synthesize block timestamps. Cheap for bootstrap; the poll loop
-  // will use real eth_getBlockByNumber timestamps later.
-  const blockTimestamps = new Map<number, Date>();
-  for (const log of logs) {
-    if (!blockTimestamps.has(log.blockNumber)) {
-      blockTimestamps.set(log.blockNumber, estimateTimestamp(log.blockNumber));
-    }
-  }
-
-  const result = await ingestTransferLogs(logs, blockTimestamps);
-  return { ...result, logCount: logs.length };
+function describePgError(err: unknown): string {
+  if (!(err instanceof Error)) return String(err);
+  const e = err as Error & { code?: string; detail?: string; severity?: string };
+  const parts = [e.message];
+  if (e.code) parts.push(`code=${e.code}`);
+  if (e.detail) parts.push(`detail=${e.detail}`);
+  return parts.join(" | ");
 }
 
 export async function runBootstrap(
@@ -113,30 +112,52 @@ export async function runBootstrap(
     }
     const waveEnd = chunks[chunks.length - 1]!.to;
 
-    let results;
+    let allLogs: ChainLog[];
     try {
-      results = await Promise.all(
-        chunks.map((c) => processChunk(source, c.from, c.to)),
+      // RPC fetches run concurrently across the pool — this is the slow,
+      // I/O-bound part that benefits from parallelism.
+      const fetched = await Promise.all(
+        chunks.map((c) => fetchChunk(source, c.from, c.to)),
       );
+      allLogs = [];
+      for (const arr of fetched) {
+        for (let i = 0; i < arr.length; i++) allLogs.push(arr[i]!);
+      }
     } catch (err) {
       console.error(
-        `[bootstrap] wave [${waveStart}..${waveEnd}] failed: ${err instanceof Error ? err.message : err}. Backing off ${RETRY_BACKOFF_MS}ms and retrying same wave.`,
+        `[bootstrap] wave [${waveStart}..${waveEnd}] fetch failed: ${describePgError(err)}. Backing off ${RETRY_BACKOFF_MS}ms and retrying same wave.`,
       );
-      cursor = waveStart; // rewind so we retry the same wave
+      cursor = waveStart;
       await sleep(RETRY_BACKOFF_MS);
       continue;
     }
 
-    let waveActivity = 0;
-    let waveCollections = 0;
-    let waveLogs = 0;
-    for (const r of results) {
-      waveActivity += r.activityRows;
-      waveCollections += r.collectionsTouched;
-      waveLogs += r.logCount;
+    // DB writes happen ONCE per wave, sequentially. Avoids 5 concurrent
+    // INSERT ... ON CONFLICT statements racing each other on the same
+    // collections rows, which would surface as "could not serialize" /
+    // "tuple concurrently updated" errors under load.
+    const waveLogCount = allLogs.length;
+    const blockTimestamps = new Map<number, Date>();
+    for (const log of allLogs) {
+      if (!blockTimestamps.has(log.blockNumber)) {
+        blockTimestamps.set(log.blockNumber, estimateTimestamp(log.blockNumber));
+      }
     }
-    totalActivityRows += waveActivity;
-    totalCollectionsTouched += waveCollections;
+
+    let ingested;
+    try {
+      ingested = await ingestTransferLogs(allLogs, blockTimestamps);
+    } catch (err) {
+      console.error(
+        `[bootstrap] wave [${waveStart}..${waveEnd}] DB write failed: ${describePgError(err)}. Backing off ${RETRY_BACKOFF_MS}ms and retrying same wave.`,
+      );
+      cursor = waveStart;
+      await sleep(RETRY_BACKOFF_MS);
+      continue;
+    }
+
+    totalActivityRows += ingested.activityRows;
+    totalCollectionsTouched += ingested.collectionsTouched;
 
     // Cursor only moves forward once every chunk in this wave landed
     // its inserts successfully. Idempotent inserts mean a partial wave
@@ -148,7 +169,7 @@ export async function runBootstrap(
     const totalElapsed = Math.round((Date.now() - start) / 1000);
     const pct = Math.round(((waveEnd - fromBlock) / Math.max(1, tip - fromBlock)) * 100);
     console.log(
-      `[bootstrap] ${waveEnd}/${tip} (${pct}%) — ${waves} waves, ${totalActivityRows} events, ${totalElapsed}s elapsed (last wave: ${waveElapsedMs}ms, ${waveLogs} logs across ${chunks.length} chunks)`,
+      `[bootstrap] ${waveEnd}/${tip} (${pct}%) — ${waves} waves, ${totalActivityRows} events, ${totalElapsed}s elapsed (last wave: ${waveElapsedMs}ms, ${waveLogCount} logs across ${chunks.length} chunks)`,
     );
   }
 
