@@ -11,12 +11,16 @@
 export const IPFS_PROXY_BASE = "https://ipfs-cache.devskibb.workers.dev/ipfs/";
 
 // Public IPFS gateways. The browser races these in parallel for metadata
-// JSON and steps through them on <img> error for images. All four send
+// JSON and steps through them on <img> error for images. All three send
 // CORS headers and serve content-addressed data, so any working one is
 // equivalent — no need for a custom proxy in front.
+//
+// dweb.link was removed: it routes through the IPFS DHT for arbitrary
+// CIDs and consistently 504s on cold reads. Its losses dominated the
+// console noise without contributing successes the other gateways
+// couldn't.
 export const IPFS_GATEWAYS = [
   "https://ipfs.io/ipfs/",
-  "https://dweb.link/ipfs/",
   "https://w3s.link/ipfs/",
   "https://4everland.io/ipfs/",
 ];

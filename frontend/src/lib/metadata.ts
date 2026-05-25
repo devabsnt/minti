@@ -32,6 +32,25 @@ function shouldUseCorsProxy(url: string): boolean {
   }
 }
 
+/**
+ * Hosts whose DNS is gone, domains we know are permanently broken, or
+ * APIs we've seen wedged for so long that retrying is pure noise. We
+ * fast-fail before issuing any network request so the console isn't
+ * spammed with ERR_NAME_NOT_RESOLVED for every card that references one.
+ */
+const DEAD_HOSTS = [
+  /^([a-z0-9-]+\.)?codepunks\.fun$/i,
+];
+
+function isDeadHost(url: string): boolean {
+  try {
+    const host = new URL(url).host;
+    return DEAD_HOSTS.some((re) => re.test(host));
+  } catch {
+    return false;
+  }
+}
+
 function wrapInCorsProxy(url: string): string {
   if (!IPFS_PROXY_BASE) return url;
   // Derive the proxy root (strip the trailing /ipfs/)
@@ -162,29 +181,23 @@ async function fetchWithGatewayFallback(uri: string): Promise<string> {
 
   const ipfs = parseIpfsUri(uri);
 
-  // Non-IPFS URI — try direct first. Most modern NFT metadata hosts opt
-  // into CORS (they want every marketplace frontend to read their JSON),
-  // so going direct is fast and avoids the worker's rate-limited path
-  // entirely. Only fall back to the proxy if the direct fetch errors —
-  // either a hard CORS block (TypeError: Failed to fetch) or an upstream
-  // status the host returned itself.
+  // Non-IPFS URI. Two paths:
+  //   - Known CORS-blocked host (scatter, lootgo, r2.dev, etc.) → straight
+  //     to the worker proxy. We do NOT try a direct fetch first; the
+  //     browser would log a CORS error before we could even catch it.
+  //   - Known-dead host (codepunks.fun, etc.) → throw immediately. No
+  //     point dialing a domain whose DNS doesn't resolve.
+  //   - Anything else → direct fetch. If the host happens to send CORS
+  //     it works; if it doesn't, the card shows a placeholder.
   if (!ipfs) {
     const resolved = resolveUri(uri);
-    try {
-      const direct = await fetch(resolved, {
-        signal: AbortSignal.timeout(8_000),
-      });
-      if (direct.ok) return direct.text();
-      // 4xx/5xx from upstream itself — proxy won't help either (it'll
-      // just forward the same status). Bail.
-      throw new Error(`Failed to fetch metadata: ${direct.status}`);
-    } catch (err) {
-      // CORS / network / timeout. Try the proxy if we have one AND the
-      // host is one we've configured for fallback. Hosts not in the
-      // list just bubble the error up.
-      if (!IPFS_PROXY_BASE || !shouldUseCorsProxy(resolved)) throw err;
+    if (isDeadHost(resolved)) {
+      throw new Error("Metadata host is dead");
     }
-    const target = wrapInCorsProxy(resolved);
+    const target =
+      shouldUseCorsProxy(resolved) && IPFS_PROXY_BASE
+        ? wrapInCorsProxy(resolved)
+        : resolved;
     const response = await fetch(target, {
       signal: AbortSignal.timeout(10_000),
     });
