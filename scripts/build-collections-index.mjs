@@ -819,6 +819,40 @@ function parseIpfsLike(uri) {
   return null;
 }
 
+/**
+ * Pull an image URL out of an arbitrary NFT metadata JSON. The OpenSea
+ * spec says `image`, but in practice we see:
+ *   - `image` / `image_url` — most common
+ *   - `imageUrl` / `imageURL` — camelCase variants (NFTs2Me, some custom)
+ *   - `imageUri` / `imageURI` — Solidity-style naming
+ *   - `image_data` — raw SVG body per OpenSea spec
+ *   - nested `properties.image.value` / `properties.image_url` — older
+ *     ERC-1155 spec form, still used by a few collections
+ *
+ * Returns the first stringly-non-empty value found, or null. Doesn't
+ * resolve / normalize — caller does that.
+ */
+function extractImageField(json) {
+  if (!json || typeof json !== "object") return null;
+  const candidates = [
+    json.image,
+    json.image_url,
+    json.imageUrl,
+    json.imageURL,
+    json.imageUri,
+    json.imageURI,
+    json.image_data,
+    json.properties?.image?.value,
+    json.properties?.image,
+    json.properties?.image_url?.value,
+    json.properties?.image_url,
+  ];
+  for (const c of candidates) {
+    if (typeof c === "string" && c.length > 0) return c;
+  }
+  return null;
+}
+
 function resolveImageUriToHttps(image) {
   if (!image || typeof image !== "string") return null;
   if (image.startsWith("data:")) return image;
@@ -932,6 +966,51 @@ function expandIdTemplate(uri, tokenId) {
 }
 
 /**
+ * Given a resolved image URL for a known sample tokenId, try to detect
+ * where the tokenId appears and produce a `{id}`-templated string. Lets
+ * the frontend render every token's thumbnail by `template.replace('{id}',
+ * tokenId)` instead of doing a per-token metadata fetch.
+ *
+ * Returns null when the URL doesn't contain a recognizable tokenId slot —
+ * either it's content-addressed (image is at `ipfs://<unique-CID-per-
+ * token>/...`, no template possible) or the URL is a data: URI (the image
+ * IS the content, no template needed).
+ *
+ * Mirrors the boundary-detection logic of frontend's extrapolateImageUrl
+ * so the two stay consistent.
+ */
+function buildImageUrlTemplate(resolvedImageUrl, sampleTokenId) {
+  if (!resolvedImageUrl) return null;
+  if (resolvedImageUrl.startsWith("data:")) return null;
+  const tid = BigInt(sampleTokenId);
+  const refDec = tid.toString();
+  const refHex = tid.toString(16);
+  const refHexPad = refHex.padStart(64, "0");
+
+  // Try padded hex first (ERC-1155 spec form), then decimal, then unpadded
+  // hex. Decimal is by far the most common in real collections.
+  const candidates = [refHexPad, refDec];
+  if (refHex !== refDec) candidates.push(refHex);
+
+  const isBoundary = (ch) => ch == null || !/[A-Za-z0-9]/.test(ch);
+  for (const refStr of candidates) {
+    // lastIndexOf so the CID (early in the URL, also alphanumeric) isn't
+    // mistaken for the tokenId.
+    const idx = resolvedImageUrl.lastIndexOf(refStr);
+    if (idx === -1) continue;
+    const before = resolvedImageUrl[idx - 1];
+    const after = resolvedImageUrl[idx + refStr.length];
+    if (!isBoundary(before) || !isBoundary(after)) continue;
+    return (
+      resolvedImageUrl.slice(0, idx) +
+      "{id}" +
+      resolvedImageUrl.slice(idx + refStr.length)
+    );
+  }
+  return null;
+}
+
+/**
  * Run precheck on a list of {address, sampleTokenId, is721, is1155}
  * entries. Returns a Map<address-lowercase, precheck-result>.
  *
@@ -969,6 +1048,7 @@ async function precheckMetadataBatch(client, batch) {
           metadataBroken: true,
           tokenUriTemplate: null,
           sampleImageUrl: null,
+          imageUrlTemplate: null,
           isOnChainMetadata: false,
         });
         return;
@@ -982,20 +1062,26 @@ async function precheckMetadataBatch(client, batch) {
           metadataBroken: true,
           tokenUriTemplate: rawUri,
           sampleImageUrl: null,
+          imageUrlTemplate: null,
           isOnChainMetadata: isOnChain,
         });
         return;
       }
-      const rawImage =
-        (typeof json.image === "string" && json.image) ||
-        (typeof json.image_url === "string" && json.image_url) ||
-        null;
+      const rawImage = extractImageField(json);
       const sampleImageUrl = rawImage ? resolveImageUriToHttps(rawImage) : null;
+      // If the resolved image URL contains the sample tokenId as a
+      // boundary-safe substring, derive an `{id}`-templated form. Lets
+      // the frontend paint every token without a per-token JSON fetch
+      // (and so without the worker / CORS dance for hosts like scatter).
+      const imageUrlTemplate = sampleImageUrl
+        ? buildImageUrlTemplate(sampleImageUrl, c.sampleTokenId)
+        : null;
       results.set(addr, {
         metadataChecked: true,
         metadataBroken: false,
         tokenUriTemplate: rawUri,
         sampleImageUrl,
+        imageUrlTemplate,
         isOnChainMetadata: isOnChain,
       });
     }),
@@ -1371,6 +1457,7 @@ async function main() {
       merged.metadataBroken = !!fresh.metadataBroken;
       merged.tokenUriTemplate = fresh.tokenUriTemplate ?? null;
       merged.sampleImageUrl = fresh.sampleImageUrl ?? null;
+      merged.imageUrlTemplate = fresh.imageUrlTemplate ?? null;
       merged.isOnChainMetadata = !!fresh.isOnChainMetadata;
     } else {
       // Preserve previous values (col already has them via ...col)
@@ -1378,6 +1465,7 @@ async function main() {
       merged.metadataBroken = col.metadataBroken ?? false;
       merged.tokenUriTemplate = col.tokenUriTemplate ?? null;
       merged.sampleImageUrl = col.sampleImageUrl ?? null;
+      merged.imageUrlTemplate = col.imageUrlTemplate ?? null;
       merged.isOnChainMetadata = col.isOnChainMetadata ?? false;
     }
     // Compute holderRatio for storage convenience (handles totalSupply parsing once)
@@ -1436,12 +1524,14 @@ async function main() {
       merged.metadataBroken = !!fresh.metadataBroken;
       merged.tokenUriTemplate = fresh.tokenUriTemplate ?? null;
       merged.sampleImageUrl = fresh.sampleImageUrl ?? null;
+      merged.imageUrlTemplate = fresh.imageUrlTemplate ?? null;
       merged.isOnChainMetadata = !!fresh.isOnChainMetadata;
     } else {
       merged.metadataChecked = false;
       merged.metadataBroken = false;
       merged.tokenUriTemplate = null;
       merged.sampleImageUrl = null;
+      merged.imageUrlTemplate = null;
       merged.isOnChainMetadata = false;
     }
     if (merged.totalSupply) {
@@ -1473,12 +1563,13 @@ async function main() {
   const sizeKb = (JSON.stringify(snapshot).length / 1024).toFixed(0);
   // Tier + metadata histogram
   const tierCounts = { 0: 0, 1: 0, 2: 0, 3: 0 };
-  let mdChecked = 0, mdBroken = 0, mdWithImage = 0, mdOnChain = 0;
+  let mdChecked = 0, mdBroken = 0, mdWithImage = 0, mdOnChain = 0, mdWithTemplate = 0;
   for (const c of merged) {
     tierCounts[c.tier ?? 0]++;
     if (c.metadataChecked) mdChecked++;
     if (c.metadataBroken) mdBroken++;
     if (c.sampleImageUrl) mdWithImage++;
+    if (c.imageUrlTemplate) mdWithTemplate++;
     if (c.isOnChainMetadata) mdOnChain++;
   }
   console.log(
@@ -1488,7 +1579,7 @@ async function main() {
     `Tiers: T0=${tierCounts[0]} hidden, T1=${tierCounts[1]} indexed, T2=${tierCounts[2]} explore, T3=${tierCounts[3]} curated`,
   );
   console.log(
-    `Metadata: ${mdChecked}/${merged.length} checked, ${mdBroken} broken, ${mdWithImage} with sample image, ${mdOnChain} on-chain`,
+    `Metadata: ${mdChecked}/${merged.length} checked, ${mdBroken} broken, ${mdWithImage} with sample image, ${mdWithTemplate} with image URL template, ${mdOnChain} on-chain`,
   );
 }
 

@@ -75,6 +75,12 @@ export interface IndexedCollection {
   metadataBroken?: boolean;
   tokenUriTemplate?: string | null;
   sampleImageUrl?: string | null;
+  // `{id}`-templated form of the sample image URL when the tokenId
+  // appears as a boundary-safe substring in the resolved URL. Lets
+  // browse-grid cards build per-token image URLs by string substitution,
+  // skipping the per-token metadata fetch entirely (no worker proxy, no
+  // CORS dance for hosts like scatter).
+  imageUrlTemplate?: string | null;
   isOnChainMetadata?: boolean;
 }
 
