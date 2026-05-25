@@ -67,7 +67,9 @@ export class RpcSource implements ChainSource {
         fromBlock: cursor,
         toBlock: chunkEnd,
       });
-      out.push(...chunk);
+      // Plain loop, not spread — V8 implements `out.push(...chunk)` as
+      // one call frame per item and overflows the stack at ~50k+ entries.
+      for (let i = 0; i < chunk.length; i++) out.push(chunk[i]!);
       cursor = chunkEnd + 1;
     }
     return out;
@@ -109,7 +111,8 @@ export class RpcSource implements ChainSource {
         const mid = filter.fromBlock + Math.floor(rangeSize / 2);
         const left = await this.getLogsChunk({ ...filter, toBlock: mid - 1 });
         const right = await this.getLogsChunk({ ...filter, fromBlock: mid });
-        return [...left, ...right];
+        // concat avoids the spread-overflow seen in V8 for big arrays.
+        return left.concat(right);
       }
       throw err;
     }
