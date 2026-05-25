@@ -1,38 +1,45 @@
 import type { ChainSource } from "./source.js";
 import {
   TRANSFER_TOPIC,
-  ingestTransfers,
+  ingestTransferLogs,
+  advanceTransferCursor,
   getTransferCursor,
 } from "./transfer-handler.js";
 
 /**
  * Bootstrap: sweep Transfer events from the cursor (or block 0) up to
- * the current chain tip, in CHUNK_SIZE-block windows. Resumable across
- * restarts via crawler_state.last_block_processed — we just pick up
- * wherever the cursor is.
+ * the current chain tip. Resumable across restarts via
+ * crawler_state.last_block_processed.
  *
- * One-time cost on first deploy. After this completes, the regular
- * poll loop takes over.
+ * Two performance levers vs naive sequential sweep:
+ *   - WAVE_SIZE chunks fire in parallel each cycle (round-robin across
+ *     the RPC pool inside RpcSource means they naturally spread across
+ *     providers).
+ *   - CHUNK_SIZE is sized larger than the slowest provider's likely
+ *     window. RpcSource's adaptive halving handles providers that
+ *     reject the range, transparently.
  *
- * IMPORTANT: we don't fetch block timestamps yet — that'd add an
- * eth_getBlockByNumber per unique block, blowing up the query budget.
- * For bootstrap we synthesize a timestamp from block-time math
- * (Monad ~0.5s blocks) so the `activity.timestamp` column is roughly
- * right. The polling loop can do proper per-block timestamp fetches
- * once it's only processing a handful of blocks per cycle.
+ * Cursor advances only after every chunk in a wave completes. If any
+ * chunk in a wave throws, we don't advance — the next start retries
+ * the whole wave. Inserts are idempotent so the retry is free.
+ *
+ * Timestamps are estimated from block-time math during bootstrap to
+ * avoid an eth_getBlockByNumber per block. Polling does the real
+ * lookup once it's processing a handful of blocks per cycle.
  */
 
-const CHUNK_SIZE = 5_000;
+const CHUNK_SIZE = 10_000;
+const WAVE_SIZE = 5; // matches the size of the Monad public RPC pool
+const RETRY_BACKOFF_MS = 5_000;
 const MONAD_AVG_BLOCK_MS = 500;
-// Estimated genesis time for Monad mainnet. Adjust if you actually know
-// the real timestamp of block 0 — for our use this is "good enough for
-// charting" and Activity gets the real timestamp once polling takes over.
+// Estimated genesis timestamp. Used only for early-block activity rows;
+// the polling loop replaces with real timestamps once it takes over.
 const GENESIS_TIME = new Date("2026-01-01T00:00:00Z").getTime();
 
 export interface BootstrapResult {
   startedAtBlock: number;
   endedAtBlock: number;
-  chunksProcessed: number;
+  wavesProcessed: number;
   totalActivityRows: number;
   totalCollectionsTouched: number;
   elapsedMs: number;
@@ -40,6 +47,30 @@ export interface BootstrapResult {
 
 function estimateTimestamp(blockNumber: number): Date {
   return new Date(GENESIS_TIME + blockNumber * MONAD_AVG_BLOCK_MS);
+}
+
+async function processChunk(
+  source: ChainSource,
+  fromBlock: number,
+  toBlock: number,
+): Promise<{ activityRows: number; collectionsTouched: number; logCount: number }> {
+  const logs = await source.getLogs({
+    fromBlock,
+    toBlock,
+    eventSignatures: [TRANSFER_TOPIC],
+  });
+
+  // Synthesize block timestamps. Cheap for bootstrap; the poll loop
+  // will use real eth_getBlockByNumber timestamps later.
+  const blockTimestamps = new Map<number, Date>();
+  for (const log of logs) {
+    if (!blockTimestamps.has(log.blockNumber)) {
+      blockTimestamps.set(log.blockNumber, estimateTimestamp(log.blockNumber));
+    }
+  }
+
+  const result = await ingestTransferLogs(logs, blockTimestamps);
+  return { ...result, logCount: logs.length };
 }
 
 export async function runBootstrap(
@@ -52,14 +83,14 @@ export async function runBootstrap(
   const tip = opts.endBlock ?? (await source.getCurrentBlock());
 
   console.log(
-    `[bootstrap] starting: fromBlock=${fromBlock}, tip=${tip}, chunkSize=${CHUNK_SIZE}`,
+    `[bootstrap] starting: fromBlock=${fromBlock}, tip=${tip}, chunk=${CHUNK_SIZE}, wave=${WAVE_SIZE}`,
   );
   if (fromBlock > tip) {
     console.log(`[bootstrap] already caught up (cursor=${resumeAt}, tip=${tip})`);
     return {
       startedAtBlock: fromBlock,
       endedAtBlock: tip,
-      chunksProcessed: 0,
+      wavesProcessed: 0,
       totalActivityRows: 0,
       totalCollectionsTouched: 0,
       elapsedMs: Date.now() - start,
@@ -67,64 +98,68 @@ export async function runBootstrap(
   }
 
   let cursor = fromBlock;
-  let chunks = 0;
+  let waves = 0;
   let totalActivityRows = 0;
   let totalCollectionsTouched = 0;
 
   while (cursor <= tip) {
-    const chunkEnd = Math.min(cursor + CHUNK_SIZE - 1, tip);
-    const chunkStart = Date.now();
-    let logs;
+    const waveStart = cursor;
+    const waveStartTime = Date.now();
+    const chunks: Array<{ from: number; to: number }> = [];
+    for (let i = 0; i < WAVE_SIZE && cursor <= tip; i++) {
+      const chunkEnd = Math.min(cursor + CHUNK_SIZE - 1, tip);
+      chunks.push({ from: cursor, to: chunkEnd });
+      cursor = chunkEnd + 1;
+    }
+    const waveEnd = chunks[chunks.length - 1]!.to;
+
+    let results;
     try {
-      logs = await source.getLogs({
-        fromBlock: cursor,
-        toBlock: chunkEnd,
-        eventSignatures: [TRANSFER_TOPIC],
-      });
+      results = await Promise.all(
+        chunks.map((c) => processChunk(source, c.from, c.to)),
+      );
     } catch (err) {
       console.error(
-        `[bootstrap] chunk [${cursor}..${chunkEnd}] failed: ${err instanceof Error ? err.message : err}`,
+        `[bootstrap] wave [${waveStart}..${waveEnd}] failed: ${err instanceof Error ? err.message : err}. Backing off ${RETRY_BACKOFF_MS}ms and retrying same wave.`,
       );
-      // Sleep + retry the same chunk. If RPCs are flaky we'd rather
-      // wait than corrupt the cursor by skipping ahead.
-      await sleep(5_000);
+      cursor = waveStart; // rewind so we retry the same wave
+      await sleep(RETRY_BACKOFF_MS);
       continue;
     }
 
-    // Build a timestamp map. For now we use estimated timestamps —
-    // see file-level comment for the trade-off.
-    const blockTimestamps = new Map<number, Date>();
-    for (const log of logs) {
-      if (!blockTimestamps.has(log.blockNumber)) {
-        blockTimestamps.set(log.blockNumber, estimateTimestamp(log.blockNumber));
-      }
+    let waveActivity = 0;
+    let waveCollections = 0;
+    let waveLogs = 0;
+    for (const r of results) {
+      waveActivity += r.activityRows;
+      waveCollections += r.collectionsTouched;
+      waveLogs += r.logCount;
     }
+    totalActivityRows += waveActivity;
+    totalCollectionsTouched += waveCollections;
 
-    const result = await ingestTransfers(logs, chunkEnd, blockTimestamps);
-    totalActivityRows += result.activityRows;
-    totalCollectionsTouched += result.collectionsTouched;
-    chunks += 1;
+    // Cursor only moves forward once every chunk in this wave landed
+    // its inserts successfully. Idempotent inserts mean a partial wave
+    // followed by a retry is safe.
+    await advanceTransferCursor(waveEnd);
+    waves += 1;
 
-    const elapsed = Date.now() - chunkStart;
-    if (chunks % 10 === 0 || chunkEnd === tip) {
-      const pct = Math.round(((chunkEnd - fromBlock) / Math.max(1, tip - fromBlock)) * 100);
-      const totalElapsed = Math.round((Date.now() - start) / 1000);
-      console.log(
-        `[bootstrap] ${chunkEnd}/${tip} (${pct}%) — ${chunks} chunks, ${totalActivityRows} events, ${totalElapsed}s elapsed (last chunk: ${elapsed}ms, ${logs.length} logs)`,
-      );
-    }
-
-    cursor = chunkEnd + 1;
+    const waveElapsedMs = Date.now() - waveStartTime;
+    const totalElapsed = Math.round((Date.now() - start) / 1000);
+    const pct = Math.round(((waveEnd - fromBlock) / Math.max(1, tip - fromBlock)) * 100);
+    console.log(
+      `[bootstrap] ${waveEnd}/${tip} (${pct}%) — ${waves} waves, ${totalActivityRows} events, ${totalElapsed}s elapsed (last wave: ${waveElapsedMs}ms, ${waveLogs} logs across ${chunks.length} chunks)`,
+    );
   }
 
   const elapsedMs = Date.now() - start;
   console.log(
-    `[bootstrap] complete: ${chunks} chunks, ${totalActivityRows} activity rows, ${totalCollectionsTouched} unique collections touched, ${(elapsedMs / 1000).toFixed(1)}s total`,
+    `[bootstrap] complete: ${waves} waves, ${totalActivityRows} activity rows, ${totalCollectionsTouched} unique collections touched, ${(elapsedMs / 1000 / 60).toFixed(1)} min total`,
   );
   return {
     startedAtBlock: fromBlock,
     endedAtBlock: tip,
-    chunksProcessed: chunks,
+    wavesProcessed: waves,
     totalActivityRows,
     totalCollectionsTouched,
     elapsedMs,

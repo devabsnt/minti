@@ -51,23 +51,23 @@ function parseTransfer(log: ChainLog): {
 }
 
 /**
- * Ingest a batch of Transfer logs:
+ * Ingest a batch of Transfer logs into `activity` + `collections`. Does
+ * NOT advance the crawler cursor — caller owns that, so it can be done
+ * once per wave when bootstrap fires multiple chunks in parallel.
+ *
  *   1. Insert each into `activity` (ON CONFLICT DO NOTHING — idempotent
  *      across restarts since (txHash, logIndex) is the PK)
  *   2. Upsert each contract into `collections` with `first_seen_block`
  *      set to the minimum of existing + new
- *   3. Advance crawler_state.transfers to the highest block seen
  *
  * Returns the number of distinct collections discovered AND the number
  * of activity rows actually inserted (after conflict dedup).
  */
-export async function ingestTransfers(
+export async function ingestTransferLogs(
   logs: readonly ChainLog[],
-  upToBlock: number,
   blockTimestamps: Map<number, Date>,
 ): Promise<{ activityRows: number; collectionsTouched: number }> {
   if (logs.length === 0) {
-    await advanceCursor(upToBlock);
     return { activityRows: 0, collectionsTouched: 0 };
   }
 
@@ -132,15 +132,17 @@ export async function ingestTransfers(
       });
   }
 
-  await advanceCursor(upToBlock);
-
   return {
     activityRows: activityRows.length,
     collectionsTouched: collectionFirstSeen.size,
   };
 }
 
-async function advanceCursor(toBlock: number): Promise<void> {
+/**
+ * Advance the transfers cursor. Idempotent — uses GREATEST so an older
+ * value can't accidentally rewind the cursor.
+ */
+export async function advanceTransferCursor(toBlock: number): Promise<void> {
   await db
     .insert(crawlerState)
     .values({ topic: "transfers", lastBlockProcessed: toBlock })
