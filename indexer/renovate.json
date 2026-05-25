@@ -1,0 +1,28 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:base"],
+  "description": "Supply-chain hardening: every dependency update PR is held for at least 7 days after the release is published, so the community has time to catch malicious or broken versions before we pull them in.",
+  "stabilityDays": 7,
+  "internalChecksFilter": "strict",
+  "packageRules": [
+    {
+      "description": "Hold lockfile changes 7 days minimum, including transitive deps.",
+      "matchUpdateTypes": ["major", "minor", "patch", "pin", "digest"],
+      "stabilityDays": 7
+    },
+    {
+      "description": "Group all dev-dependency updates into one PR to reduce review fatigue.",
+      "matchDepTypes": ["devDependencies"],
+      "groupName": "devDependencies"
+    }
+  ],
+  "vulnerabilityAlerts": {
+    "description": "Security advisories bypass the stability window only when they are themselves >= 7 days old.",
+    "stabilityDays": 7,
+    "enabled": true
+  },
+  "lockFileMaintenance": {
+    "enabled": true,
+    "schedule": ["before 4am on monday"]
+  }
+}
