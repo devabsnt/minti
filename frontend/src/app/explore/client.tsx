@@ -159,11 +159,15 @@ export function ExploreClient() {
     if (!indexData || trimmed) return [];
     const live = liveTrending; // Map<address, transferCount> over last 6h
 
-    // Score a collection using live 6h count when available; fall back to
-    // the snapshot's recent24h. The static trending file is fetched
-    // up-front so this is usually warm by first render.
+    // Score a collection using live 6h count when available; if the map
+    // hasn't loaded yet OR doesn't contain this address, fall back to the
+    // snapshot's recent24h instead of scoring 0. The previous behavior
+    // collapsed the hero to empty whenever the only high-live-count
+    // entries got filtered (e.g. when LP-position NFTs are removed and
+    // the remaining legit collections aren't in the 6h window).
     const liveScore = (c: IndexedCollection): number => {
-      if (live) return live.get(c.address.toLowerCase()) ?? 0;
+      const liveVal = live?.get(c.address.toLowerCase()) ?? 0;
+      if (liveVal > 0) return liveVal;
       return c.recent24h ?? 0;
     };
 
