@@ -52,26 +52,42 @@ async function fetchWithGatewayFallback(uri: string): Promise<string> {
   }
 
   // IPFS-shaped URI — race all gateways in parallel. Whichever returns
-  // first wins. This drops cold-read latency from "slowest gateway timeout"
-  // to "fastest gateway response", usually 200-800ms vs 5-10s sequential.
+  // first wins; we abort the losers via AbortController so the browser
+  // stops downloading their bodies (saves bandwidth and console noise).
   //
   // The IPFS_GATEWAYS list starts with our own Cloudflare cache worker
   // (when configured) which usually replies in <50ms for repeat reads.
-  const attempts = IPFS_GATEWAYS.map(async (gateway) => {
+  const ctrls = IPFS_GATEWAYS.map(() => new AbortController());
+  // Auto-cancel everything after 10s as a global timeout
+  const globalTimeout = setTimeout(
+    () => ctrls.forEach((c) => c.abort()),
+    10_000,
+  );
+
+  const attempts = IPFS_GATEWAYS.map(async (gateway, i) => {
     const url = gateway + ipfs.cid + ipfs.path;
-    const response = await fetch(url, { signal: AbortSignal.timeout(10_000) });
+    const response = await fetch(url, { signal: ctrls[i].signal });
     if (!response.ok) throw new Error(`gateway ${gateway}: ${response.status}`);
-    return response.text();
+    const text = await response.text();
+    return { text, idx: i };
   });
+
   try {
-    return await Promise.any(attempts);
+    const winner = await Promise.any(attempts);
+    // Cancel all losers so their pending downloads stop
+    ctrls.forEach((c, i) => {
+      if (i !== winner.idx) c.abort();
+    });
+    return winner.text;
   } catch (err) {
-    // Promise.any throws AggregateError when every attempt failed.
+    // Every gateway failed
     const inner =
       err instanceof AggregateError && err.errors[0] instanceof Error
         ? err.errors[0]
         : (err as Error);
     throw inner || new Error("All IPFS gateways failed");
+  } finally {
+    clearTimeout(globalTimeout);
   }
 }
 

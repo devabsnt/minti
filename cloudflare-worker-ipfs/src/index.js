@@ -31,13 +31,21 @@
 // Public IPFS gateways known to serve CORS headers for arbitrary CIDs.
 // Order doesn't matter — we race them. Subdomain forms (where supported)
 // avoid path-namespace collisions and tend to resolve faster.
+//
+// Trimmed to gateways that actually respond in production. Specifically
+// dropped:
+//   - flk-ipfs.xyz: frequently returns 502/504 even for valid CIDs
+//   - 4everland.io: aggressive rate limiting from worker IPs
+// Added:
+//   - cf-ipfs.com: Cloudflare's own (back online for many CIDs)
+//   - storry.tv: backed by web3.storage, faster than nftstorage.link lately
 const GATEWAYS = [
   (cid, path) => `https://ipfs.io/ipfs/${cid}${path}`,
   (cid, path) => `https://dweb.link/ipfs/${cid}${path}`,
-  (cid, path) => `https://4everland.io/ipfs/${cid}${path}`,
   (cid, path) => `https://w3s.link/ipfs/${cid}${path}`,
   (cid, path) => `https://nftstorage.link/ipfs/${cid}${path}`,
-  (cid, path) => `https://flk-ipfs.xyz/ipfs/${cid}${path}`,
+  (cid, path) => `https://${cid}.ipfs.cf-ipfs.com${path}`,
+  (cid, path) => `https://storry.tv/ipfs/${cid}${path}`,
 ];
 
 const CORS_HEADERS = {

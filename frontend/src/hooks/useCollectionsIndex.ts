@@ -307,42 +307,60 @@ export function legitimacyScore(c: IndexedCollection): number {
 }
 
 /**
- * Default-view filter. If the build script set tier=0, that's authoritative.
- * Otherwise apply the same checks the script does. Assumes a v4 snapshot
- * with mintCount / uniqueSenders populated — run the collections-index job
- * once before deploying to ensure the static JSON has these fields.
+ * Default-view filter. Computed entirely client-side from the snapshot's
+ * raw stats — we don't trust the stored `tier` field by itself because
+ * loosening / tightening it on the server would require a 90-min rebuild
+ * of the collections index every time. The snapshot's `tier === 0` IS
+ * honoured (those are definitively spam) but tier 1/2/3 boundaries are
+ * derived here.
+ *
+ * Order: definitive rejects (no metadata, scam name, infra name, snapshot
+ * said tier 0) → activity floor → distribution sanity → engagement.
+ *
+ * Thresholds are intentionally generous so smaller real collections with
+ * 15-20 holders aren't hidden — that was the bug where "r3tards"-style
+ * meme tickers didn't show up.
  */
 export function isLikelyReal(c: IndexedCollection): boolean {
-  // Prefer the snapshot's tier when available
-  if (typeof c.tier === "number") return c.tier >= 2;
+  const name = c.name || "";
+  const symbol = c.symbol || "";
+
+  // Hard rejects that apply at any tier
+  if (!c.name || !c.symbol) return false;
+  if (SPAM_NAME_RE.test(name) || SPAM_NAME_RE.test(symbol)) return false;
+  if (DEFI_INFRA_NAME_RE.test(name) || DEFI_INFRA_NAME_RE.test(symbol)) return false;
+  if (c.tier === 0) return false;
 
   const holders = c.uniqueHolders ?? 0;
   const transfers = c.transferCount ?? 0;
   const mints = c.mintCount ?? 0;
-  const secondary = Math.max(0, transfers - mints);
+  // Treat snapshots without mint data as "everything is secondary" so v3
+  // snapshots don't false-reject everything.
+  const hasMintData = typeof c.mintCount === "number";
+  const secondary = hasMintData ? Math.max(0, transfers - mints) : transfers;
   const senders = c.uniqueSenders ?? 0;
+  const hasSenderData = typeof c.uniqueSenders === "number";
 
-  if (holders < 10) return false;
-  if (transfers < 20) return false;
-  if (!c.name || !c.symbol) return false;
+  if (holders < 12) return false;
+  if (transfers < 10) return false;
 
-  const name = c.name;
-  const symbol = c.symbol;
-  if (SPAM_NAME_RE.test(name) || SPAM_NAME_RE.test(symbol)) return false;
-  if (DEFI_INFRA_NAME_RE.test(name) || DEFI_INFRA_NAME_RE.test(symbol)) return false;
-
+  // Distribution sanity — wide range of holders relative to supply
   if (c.totalSupply) {
     const supply = Number(c.totalSupply);
-    if (supply > 0 && holders / supply < 0.05) return false;
+    if (supply > 0 && holders / supply < 0.03) return false;
   }
 
-  // Engagement floor — non-mint transfers per holder must clear 1.5×
-  if (secondary / Math.max(holders, 1) < 1.5) return false;
+  // Engagement floor — but only for SMALL collections. Once a collection
+  // has ≥100 holders the breadth is itself the legitimacy signal; many
+  // legitimate new mints have 1000+ holders all hodling with zero secondary
+  // transfers yet ("r3tards"-style). Don't punish them for that.
+  if (holders < 100) {
+    if (secondary < 3) return false;
+    if (hasSenderData && senders < 1) return false;
+  }
 
-  // Sender diversity — at least two distinct senders other than the minter
-  if (senders < 2) return false;
-
-  if (transfers / holders > MAX_TRANSFERS_PER_HOLDER) return false;
+  // Operational NFT signature — extreme transfers-per-holder ratio
+  if (transfers / Math.max(holders, 1) > MAX_TRANSFERS_PER_HOLDER) return false;
 
   return true;
 }
@@ -525,7 +543,38 @@ export interface SearchOptions {
 
 /**
  * Substring search + flexible ranking.
+ *
+ * Hot path on /explore — runs on every (debounced) keystroke against
+ * ~35k collections. Two memoization layers keep INP under control:
+ *
+ *   - `dedupeByName` caches its result by the input array reference
+ *   - This function caches the per-item `trendingScore` keyed by
+ *     (sortKey, window). Without memoization, the sort comparator runs
+ *     ~1M score computations for 10k+ filtered items, each doing several
+ *     Math.log calls — visibly chunks the main thread.
  */
+const trendingScoreCache = new WeakMap<
+  readonly IndexedCollection[],
+  Map<string, Map<IndexedCollection, number>>
+>();
+
+function precomputeTrendingScores(
+  items: readonly IndexedCollection[],
+  window: ActivityWindow,
+): Map<IndexedCollection, number> {
+  let perKey = trendingScoreCache.get(items);
+  if (!perKey) {
+    perKey = new Map();
+    trendingScoreCache.set(items, perKey);
+  }
+  let cached = perKey.get(window);
+  if (cached) return cached;
+  cached = new Map();
+  for (const c of items) cached.set(c, trendingScore(c, window));
+  perKey.set(window, cached);
+  return cached;
+}
+
 export function searchIndex(
   index: CollectionsIndex | undefined,
   options: SearchOptions = {},
@@ -552,22 +601,25 @@ export function searchIndex(
     return name.includes(q) || symbol.includes(q) || addr.startsWith(q);
   });
 
-  matched.sort((a, b) => {
-    if (sortKey === "trending") {
-      const aa = trendingScore(a, window);
-      const bb = trendingScore(b, window);
+  if (sortKey === "trending") {
+    // Precompute scores once, reuse across the sort comparator. Eliminates
+    // the per-comparison Math.log work that was driving the INP regression.
+    const scores = precomputeTrendingScores(deduped, window);
+    matched.sort((a, b) => {
+      const aa = scores.get(a) ?? 0;
+      const bb = scores.get(b) ?? 0;
       if (aa !== bb) return bb - aa;
       return legitimacyScore(b) - legitimacyScore(a);
-    }
-    if (sortKey === "holders") {
-      return (b.uniqueHolders ?? 0) - (a.uniqueHolders ?? 0);
-    }
-    if (sortKey === "newest") {
-      return (b.firstTransferBlock ?? 0) - (a.firstTransferBlock ?? 0);
-    }
-    // name
-    return (a.name || "").localeCompare(b.name || "");
-  });
+    });
+  } else if (sortKey === "holders") {
+    matched.sort((a, b) => (b.uniqueHolders ?? 0) - (a.uniqueHolders ?? 0));
+  } else if (sortKey === "newest") {
+    matched.sort(
+      (a, b) => (b.firstTransferBlock ?? 0) - (a.firstTransferBlock ?? 0),
+    );
+  } else {
+    matched.sort((a, b) => (a.name || "").localeCompare(b.name || ""));
+  }
 
   return matched.slice(0, limit);
 }
