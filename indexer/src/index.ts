@@ -26,7 +26,12 @@ serve(
   },
 );
 
-startCrawler();
+// Fire and forget — bootstrap can run for a while and we don't want
+// to block the API server's `serve()` callback from logging. Any
+// unhandled rejection in the crawler propagates to the listener below.
+startCrawler().catch((err) => {
+  console.error("[crawler] top-level failure:", err);
+});
 
 // Log unhandled rejections so we see them in Railway's logs instead of
 // silently failing. Process will exit on uncaught exceptions by default.
