@@ -15,6 +15,11 @@ on:
         required: false
         type: boolean
         default: false
+      backfill_metadata:
+        description: "Re-precheck metadata for every previously-known collection that doesn't yet have metadataChecked=true. Use once after the precheck feature ships, then leave unchecked."
+        required: false
+        type: boolean
+        default: false
       max_blocks:
         description: "Cap on blocks scanned (debug). Leave empty for full chain."
         required: false
@@ -54,6 +59,11 @@ jobs:
           # (b) this is the Sunday cron — needed to refresh top1/top10
           # holder concentration which isn't tracked incrementally.
           FORCE_FULL_RESCAN: ${{ (inputs.force_full_rescan || github.event.schedule == '0 6 * * 0') && '1' || '' }}
+          # Backfill metadata: re-precheck previously-known collections
+          # whose tokenURI was never resolved server-side. One-shot — set
+          # the input to true the first time the precheck feature ships,
+          # then leave it off for normal runs.
+          BACKFILL_METADATA: ${{ inputs.backfill_metadata && '1' || '' }}
           # Marketplace address — falls through to "not deployed" if unset.
           # Once MintiMarketplace is deployed on Monad, set this secret to
           # the deployed address and ItemSold events start populating
