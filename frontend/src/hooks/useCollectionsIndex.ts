@@ -241,7 +241,7 @@ const SPAM_NAME_RE =
  * name-service records, etc.
  */
 const DEFI_INFRA_NAME_RE =
-  /uniswap|sushiswap|pancakeswap|aave|compound|maker\b|curve\b|balancer|pendle|gmx|kuru|crocswap|monadex|nadfun|nostra|izumi|kintsu|magma|amphor|stork|pyth|clob|orderbook|order\s*book|\bperp\b|\bswap\b|\bexchange\b|\brouter\b|lp\b|liquidity\s+position|\bposition\s*(nft|v\d|manager)\b|\bvault\b|\bstake\b|staking\b|lending\b|yield\b|\bdebt\b|atoken|name\s+service|registrar\b|\bdomain\b|\bname\s+manager\b|\bsbt\b|soulbound|\bpoap\b|attestation|\bcertificate\b|\bbadge\b|\bproof\s+of\b|\bachievement\b/i;
+  /uniswap|sushiswap|pancakeswap|\bpancake\b|\bpcs\b|aave|compound|maker\b|curve\b|balancer|pendle|gmx|kuru|crocswap|monadex|nadfun|nostra|izumi|kintsu|magma|amphor|stork|pyth|clob|orderbook|order\s*book|velodrome|aerodrome|camelot|quickswap|trader\s*joe|algebra|slipstream|steer\b|clmm|\bperp\b|\bswap\b|\bexchange\b|\brouter\b|lp\b|liquidity\s+position|\bv\d\s*positions?\b|\bpositions?\s+nft\b|\bposition\s*(nft|v\d|manager|token)\b|\bvault\b|\bstake\b|staking\b|lending\b|yield\b|\bdebt\b|atoken|name\s+service|registrar\b|\bdomain\b|\bname\s+manager\b|\bsbt\b|soulbound|\bpoap\b|attestation|\bcertificate\b|\bbadge\b|\bproof\s+of\b|\bachievement\b/i;
 
 // Operational NFTs (orderbook positions, LPs that constantly reshuffle, etc.)
 // have absurd transfer-per-holder ratios.

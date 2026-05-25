@@ -148,12 +148,11 @@ async function fetchWithGatewayFallback(uri: string): Promise<string> {
   // BELT-AND-SUSPENDERS: parseIpfsUri should catch every ipfs:/* form,
   // but if it ever returns null for one we still must not call
   // fetch("ipfs://…") — the browser rejects with "URL scheme not
-  // supported". Strip the scheme + slashes and treat the rest as
-  // <cid>/<path>; if the proxy can't find that CID it'll 404 cleanly.
+  // supported". Strip the scheme + slashes and route to a public gateway.
   if (/^ipfs:\/{1,2}/i.test(uri)) {
     const stripped = uri.replace(/^ipfs:\/{1,2}/i, "");
-    const proxyBase = IPFS_PROXY_BASE || (IPFS_GATEWAYS[0] ?? "https://ipfs.io/ipfs/");
-    const url = proxyBase + stripped;
+    const gateway = IPFS_GATEWAYS[0] ?? "https://ipfs.io/ipfs/";
+    const url = gateway + stripped;
     const response = await fetch(url, { signal: AbortSignal.timeout(10_000) });
     if (!response.ok) {
       throw new Error(`Failed to fetch ipfs metadata: ${response.status}`);

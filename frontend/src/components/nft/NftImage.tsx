@@ -33,50 +33,40 @@ const HOSTS_NEEDING_PROXY = [
 ];
 
 /**
- * Rewrite ANY image URL to a browser-loadable HTTPS URL. This is the
- * LAST LINE OF DEFENSE — if anything other than `https://...` or
- * `data:...` makes it into `<img src=>` we cause an ERR_UNKNOWN_URL_SCHEME
- * console error. Routes:
+ * Rewrite ANY image URL to a browser-loadable HTTPS URL. Routes:
  *
- *   - `ipfs://<cid>/<path>` and `ipfs:/<cid>/<path>` (broken single-slash
- *     variant some contracts return) → proxy `/ipfs/<cid>/<path>`
- *   - `ar://<txid>` → arweave.net
- *   - Path-style gateway URL → proxy
- *   - Subdomain-style gateway URL → proxy
- *   - Centralized CORS-blocked host → proxy `/proxy?url=...`
- *   - data: URIs and everything else → unchanged
- *
- * The proxy itself races all known gateways internally on cold reads
- * and serves cache hits in <50ms.
+ *   - data: / blob: → unchanged (browser handles natively)
+ *   - ipfs:// → public IPFS gateway (IPFS_GATEWAYS[0])
+ *   - ar:// → arweave.net
+ *   - Subdomain / path-style gateway URL → unchanged (already a public gateway)
+ *   - Centralized CORS-blocked host → worker `/proxy?url=...` (the worker's
+ *     only remaining job)
+ *   - Anything else → unchanged
  */
 function rewriteIpfsUrl(url: string): string {
   if (!url) return url;
 
-  // Data URIs and bare schemes that the browser handles natively
   if (url.startsWith("data:") || url.startsWith("blob:")) return url;
 
-  const base = IPFS_PROXY_BASE || "https://ipfs.io/ipfs/";
-  if (url.startsWith(base)) return url;
+  const ipfsGateway = IPFS_GATEWAYS[0];
 
   // ipfs:// or ipfs:/ (single slash — broken but seen in the wild)
   if (url.startsWith("ipfs://") || url.startsWith("ipfs:/")) {
     const stripped = url.replace(/^ipfs:\/{1,2}/i, "");
-    return `${base}${stripped}`;
+    return `${ipfsGateway}${stripped}`;
   }
 
-  // ar://
   if (url.startsWith("ar://")) {
     return "https://arweave.net/" + url.slice("ar://".length);
   }
 
-  // Subdomain pattern: https://<cid>.ipfs.<host>/path
-  const sub = url.match(/^https?:\/\/([^./]+)\.ipfs\.[^/]+(\/.*)?$/);
-  if (sub) return `${base}${sub[1]}${sub[2] || ""}`;
-  // Path-style pattern: https://<host>/ipfs/<cid>/path
-  const pth = url.match(/^https?:\/\/[^/]+\/ipfs\/([^/?#]+)(\/[^?#]*)?(\?[^#]*)?$/);
-  if (pth) return `${base}${pth[1]}${pth[2] || ""}${pth[3] || ""}`;
+  // Subdomain / path-style gateway URLs come in CORS-clean already.
+  // Don't rewrite — let the browser hit them directly so its cache works
+  // and so a 502 from one gateway doesn't bring down the whole grid.
+  if (/^https?:\/\/[^./]+\.ipfs\.[^/]+/.test(url)) return url;
+  if (/^https?:\/\/[^/]+\/ipfs\//.test(url)) return url;
 
-  // Centralized hosts that need CORS proxying for `<img>` to work
+  // Centralized CORS-blocked host → worker /proxy?url=
   try {
     const host = new URL(url).host;
     if (IPFS_PROXY_BASE && HOSTS_NEEDING_PROXY.some((re) => re.test(host))) {

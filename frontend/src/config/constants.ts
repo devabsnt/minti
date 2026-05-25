@@ -1,23 +1,24 @@
 /**
- * Edge-cached IPFS proxy. Deployed in cloudflare-worker-ipfs/. Fronts the
- * public gateways with parallel-race + 1-year CDN cache. Always prefer
- * this over hitting gateways directly — cold reads land at the fastest
- * gateway, warm reads come back in <50ms from Cloudflare's edge.
+ * Cloudflare worker base. Kept ONLY for the `/proxy?url=` CORS-proxy
+ * endpoint that lets us read centralized metadata hosts (scatter.art,
+ * lootgo.app, S3/R2 buckets, etc.) which don't send CORS headers.
  *
- * Leave empty to bypass and use the raw gateway list below (e.g. on
- * localhost when the proxy isn't reachable).
+ * Not used for IPFS — public gateways below are content-addressed and
+ * race themselves browser-side, so adding a worker hop in front of them
+ * just doubled the failure surface and spammed the console with 502s
+ * whenever any CID was unreachable.
  */
 export const IPFS_PROXY_BASE = "https://ipfs-cache.devskibb.workers.dev/ipfs/";
 
-// Fallback gateway list used when the proxy is unset or returns an error.
-// Browser-friendly only — Pinata's public gateway blocks cross-origin
-// requests for content not pinned to their service.
+// Public IPFS gateways. The browser races these in parallel for metadata
+// JSON and steps through them on <img> error for images. All four send
+// CORS headers and serve content-addressed data, so any working one is
+// equivalent — no need for a custom proxy in front.
 export const IPFS_GATEWAYS = [
-  IPFS_PROXY_BASE || "https://ipfs.io/ipfs/",
   "https://ipfs.io/ipfs/",
   "https://dweb.link/ipfs/",
-  "https://4everland.io/ipfs/",
   "https://w3s.link/ipfs/",
+  "https://4everland.io/ipfs/",
 ];
 
 export const PAGE_SIZE = 20;
