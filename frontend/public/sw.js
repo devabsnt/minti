@@ -33,7 +33,7 @@
  * Registered from `app/layout.tsx` on the client.
  */
 
-const CACHE_NAME = "minti-ipfs-v1";
+const CACHE_NAME = "minti-ipfs-v2";
 const PROXY_HOST = "ipfs-cache.devskibb.workers.dev";
 
 self.addEventListener("install", (event) => {

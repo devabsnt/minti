@@ -33,20 +33,42 @@ const HOSTS_NEEDING_PROXY = [
 ];
 
 /**
- * Rewrite IPFS gateway URLs to our edge-cached proxy. The proxy races
- * all configured gateways internally on cold reads and serves cache hits
- * in <50ms.
+ * Rewrite ANY image URL to a browser-loadable HTTPS URL. This is the
+ * LAST LINE OF DEFENSE — if anything other than `https://...` or
+ * `data:...` makes it into `<img src=>` we cause an ERR_UNKNOWN_URL_SCHEME
+ * console error. Routes:
  *
- * For non-IPFS image URLs on hosts that block CORS, also route through
- * the proxy's /proxy?url= endpoint so `<img>` can load them.
+ *   - `ipfs://<cid>/<path>` and `ipfs:/<cid>/<path>` (broken single-slash
+ *     variant some contracts return) → proxy `/ipfs/<cid>/<path>`
+ *   - `ar://<txid>` → arweave.net
+ *   - Path-style gateway URL → proxy
+ *   - Subdomain-style gateway URL → proxy
+ *   - Centralized CORS-blocked host → proxy `/proxy?url=...`
+ *   - data: URIs and everything else → unchanged
  *
- * Falls back to ipfs.io path-style when the proxy is unset (e.g. local
- * dev without the worker deployed).
+ * The proxy itself races all known gateways internally on cold reads
+ * and serves cache hits in <50ms.
  */
 function rewriteIpfsUrl(url: string): string {
   if (!url) return url;
+
+  // Data URIs and bare schemes that the browser handles natively
+  if (url.startsWith("data:") || url.startsWith("blob:")) return url;
+
   const base = IPFS_PROXY_BASE || "https://ipfs.io/ipfs/";
   if (url.startsWith(base)) return url;
+
+  // ipfs:// or ipfs:/ (single slash — broken but seen in the wild)
+  if (url.startsWith("ipfs://") || url.startsWith("ipfs:/")) {
+    const stripped = url.replace(/^ipfs:\/{1,2}/i, "");
+    return `${base}${stripped}`;
+  }
+
+  // ar://
+  if (url.startsWith("ar://")) {
+    return "https://arweave.net/" + url.slice("ar://".length);
+  }
+
   // Subdomain pattern: https://<cid>.ipfs.<host>/path
   const sub = url.match(/^https?:\/\/([^./]+)\.ipfs\.[^/]+(\/.*)?$/);
   if (sub) return `${base}${sub[1]}${sub[2] || ""}`;
