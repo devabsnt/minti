@@ -52,6 +52,10 @@ import { writeFileSync, mkdirSync, readFileSync, existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createPublicClient, defineChain, http } from "viem";
+import {
+  buildImageUrlTemplate,
+  precheckAll,
+} from "./lib/precheck.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -197,22 +201,6 @@ const ABI = [
   },
 ];
 
-const TOKEN_URI_ABI = [
-  {
-    name: "tokenURI",
-    inputs: [{ type: "uint256", name: "tokenId" }],
-    outputs: [{ type: "string" }],
-    stateMutability: "view",
-    type: "function",
-  },
-  {
-    name: "uri",
-    inputs: [{ type: "uint256", name: "id" }],
-    outputs: [{ type: "string" }],
-    stateMutability: "view",
-    type: "function",
-  },
-];
 
 // ── Hypersync transport ───────────────────────────────────────────
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -775,375 +763,6 @@ async function scanMarketplaceSales(currentBlock, itemSoldTopic) {
   return out;
 }
 
-// ── 3a. Metadata precheck ────────────────────────────────────────
-//
-// For each collection, fetch tokenURI(lowestTokenId || 1) and try to
-// resolve the metadata JSON server-side. We then bake the discovered
-// image URL into the snapshot so the frontend can paint thumbnails on
-// the explore grid with ZERO runtime metadata fetches. Collections whose
-// metadata can't be resolved at all are flagged so assignTier can hide
-// them — that's how codepunks-style permanently-dead collections stop
-// spamming the user's console.
-//
-// Server-side has no CORS, so this also captures collections that the
-// browser can't reach directly (scatter.art, R2 buckets without CORS,
-// etc.). The frontend gets the resolved image URL even though it could
-// never have produced it itself.
-
-// Public IPFS gateways — racing these gives us best-of-N latency on
-// cold reads. Same set we use client-side, minus dweb.link (chronic 504).
-const PRECHECK_IPFS_GATEWAYS = [
-  "https://ipfs.io/ipfs/",
-  "https://w3s.link/ipfs/",
-  "https://4everland.io/ipfs/",
-];
-
-const PRECHECK_FETCH_TIMEOUT_MS = 8_000;
-
-// CIDv1 (base32 sha256, 59 chars) OR CIDv0 (Qm-prefix base58, 46 chars).
-const CID_RE = /(Qm[1-9A-HJ-NP-Za-km-z]{44}|baf[a-z2-7]{52,})/i;
-
-function looksLikeCid(s) {
-  return !!s && CID_RE.test(s) && new RegExp(`^${CID_RE.source}$`, "i").test(s);
-}
-
-function parseIpfsLike(uri) {
-  if (!uri) return null;
-  if (uri.startsWith("ipfs://")) {
-    const rest = uri.slice("ipfs://".length);
-    const slash = rest.indexOf("/");
-    const cid = slash >= 0 ? rest.slice(0, slash) : rest;
-    const path = slash >= 0 ? rest.slice(slash) : "";
-    if (looksLikeCid(cid)) return { cid, path };
-  }
-  const sub = uri.match(/^https?:\/\/([^./]+)\.ipfs\.[^/]+(\/.*)?$/);
-  if (sub && looksLikeCid(sub[1])) return { cid: sub[1], path: sub[2] || "" };
-  const pth = uri.match(/^https?:\/\/[^/]+\/ipfs\/([^/?#]+)(\/[^?#]*)?(\?[^#]*)?$/);
-  if (pth && looksLikeCid(pth[1])) {
-    return { cid: pth[1], path: (pth[2] || "") + (pth[3] || "") };
-  }
-  return null;
-}
-
-/**
- * Pull an image URL out of an arbitrary NFT metadata JSON. The OpenSea
- * spec says `image`, but in practice we see:
- *   - `image` / `image_url` — most common
- *   - `imageUrl` / `imageURL` — camelCase variants (NFTs2Me, some custom)
- *   - `imageUri` / `imageURI` — Solidity-style naming
- *   - `image_data` — raw SVG body per OpenSea spec
- *   - nested `properties.image.value` / `properties.image_url` — older
- *     ERC-1155 spec form, still used by a few collections
- *
- * Returns the first stringly-non-empty value found, or null. Doesn't
- * resolve / normalize — caller does that.
- */
-function extractImageField(json) {
-  if (!json || typeof json !== "object") return null;
-  const candidates = [
-    json.image,
-    json.image_url,
-    json.imageUrl,
-    json.imageURL,
-    json.imageUri,
-    json.imageURI,
-    json.image_data,
-    json.properties?.image?.value,
-    json.properties?.image,
-    json.properties?.image_url?.value,
-    json.properties?.image_url,
-  ];
-  for (const c of candidates) {
-    if (typeof c === "string" && c.length > 0) return c;
-  }
-  return null;
-}
-
-function resolveImageUriToHttps(image) {
-  if (!image || typeof image !== "string") return null;
-  if (image.startsWith("data:")) return image;
-  if (image.startsWith("ar://")) {
-    return "https://arweave.net/" + image.slice("ar://".length);
-  }
-  const ipfs = parseIpfsLike(image);
-  if (ipfs) return `${PRECHECK_IPFS_GATEWAYS[0]}${ipfs.cid}${ipfs.path}`;
-  if (image.startsWith("http://") || image.startsWith("https://")) return image;
-  return null;
-}
-
-function decodeDataUriJson(uri) {
-  if (uri.startsWith("data:application/json;base64,")) {
-    return Buffer.from(uri.slice("data:application/json;base64,".length), "base64").toString("utf8");
-  }
-  if (uri.startsWith("data:application/json,")) {
-    return decodeURIComponent(uri.slice("data:application/json,".length));
-  }
-  if (uri.startsWith("data:application/json;utf8,")) {
-    return uri.slice("data:application/json;utf8,".length);
-  }
-  return null;
-}
-
-async function fetchWithTimeout(url, ms) {
-  const ctrl = new AbortController();
-  const t = setTimeout(() => ctrl.abort(), ms);
-  try {
-    const resp = await fetch(url, { signal: ctrl.signal });
-    if (!resp.ok) throw new Error(`${resp.status}`);
-    return await resp.text();
-  } finally {
-    clearTimeout(t);
-  }
-}
-
-async function fetchMetadataJson(uri) {
-  if (!uri) return null;
-  if (uri.startsWith("data:")) {
-    const decoded = decodeDataUriJson(uri);
-    if (!decoded) return null;
-    try { return JSON.parse(decoded); } catch { return null; }
-  }
-  // IPFS-shaped: race public gateways. Any 200 wins.
-  const ipfs = parseIpfsLike(uri);
-  if (ipfs) {
-    const ctrls = PRECHECK_IPFS_GATEWAYS.map(() => new AbortController());
-    const attempts = PRECHECK_IPFS_GATEWAYS.map(async (gw, i) => {
-      const t = setTimeout(() => ctrls[i].abort(), PRECHECK_FETCH_TIMEOUT_MS);
-      try {
-        const resp = await fetch(`${gw}${ipfs.cid}${ipfs.path}`, { signal: ctrls[i].signal });
-        if (!resp.ok) throw new Error(`${resp.status}`);
-        return await resp.text();
-      } finally {
-        clearTimeout(t);
-      }
-    });
-    try {
-      const text = await Promise.any(attempts);
-      ctrls.forEach((c) => c.abort());
-      try { return JSON.parse(text); } catch { return null; }
-    } catch {
-      return null;
-    }
-  }
-  // Centralized URL. Node has no CORS, so a direct fetch reaches scatter
-  // and friends even if the browser can't.
-  if (uri.startsWith("http://") || uri.startsWith("https://")) {
-    try {
-      const text = await fetchWithTimeout(uri, PRECHECK_FETCH_TIMEOUT_MS);
-      try { return JSON.parse(text); } catch { return null; }
-    } catch {
-      return null;
-    }
-  }
-  return null;
-}
-
-/**
- * Multicall tokenURI/uri for a batch of contracts. Pads token id variants
- * for {id}-template URIs (ERC-1155 spec) and substitutes them so the
- * returned string is a concrete URL ready to fetch.
- */
-async function tokenUriBatch(client, contracts) {
-  const calls = contracts.map((c) => ({
-    address: c.address,
-    abi: TOKEN_URI_ABI,
-    functionName: c.is1155 && !c.is721 ? "uri" : "tokenURI",
-    args: [BigInt(c.sampleTokenId)],
-  }));
-  const results = await client.multicall({
-    contracts: calls,
-    multicallAddress: MULTICALL3,
-    allowFailure: true,
-  });
-  return results.map((r) =>
-    r.status === "success" && typeof r.result === "string" && r.result.length > 0
-      ? r.result
-      : null,
-  );
-}
-
-function expandIdTemplate(uri, tokenId) {
-  if (!uri || !uri.includes("{id}")) return uri;
-  const dec = tokenId.toString();
-  const hex64 = tokenId.toString(16).padStart(64, "0");
-  // ERC-1155 spec wants the 64-char padded hex; some collections shipped
-  // decimal anyway. Try padded first since that's what the spec mandates.
-  return uri.replace(/\{id\}/g, hex64).replace(/\{decimalId\}/g, dec);
-}
-
-/**
- * Given a resolved image URL for a known sample tokenId, try to detect
- * where the tokenId appears and produce a `{id}`-templated string. Lets
- * the frontend render every token's thumbnail by `template.replace('{id}',
- * tokenId)` instead of doing a per-token metadata fetch.
- *
- * Returns null when the URL doesn't contain a recognizable tokenId slot —
- * either it's content-addressed (image is at `ipfs://<unique-CID-per-
- * token>/...`, no template possible) or the URL is a data: URI (the image
- * IS the content, no template needed).
- *
- * Mirrors the boundary-detection logic of frontend's extrapolateImageUrl
- * so the two stay consistent.
- */
-function buildImageUrlTemplate(resolvedImageUrl, sampleTokenId) {
-  if (!resolvedImageUrl) return null;
-  if (resolvedImageUrl.startsWith("data:")) return null;
-  const tid = BigInt(sampleTokenId);
-  const refDec = tid.toString();
-  const refHex = tid.toString(16);
-  const refHexPad = refHex.padStart(64, "0");
-
-  // Try padded hex first (ERC-1155 spec form), then decimal, then unpadded
-  // hex. Decimal is by far the most common in real collections.
-  const candidates = [refHexPad, refDec];
-  if (refHex !== refDec) candidates.push(refHex);
-
-  const isBoundary = (ch) => ch == null || !/[A-Za-z0-9]/.test(ch);
-  for (const refStr of candidates) {
-    // lastIndexOf so the CID (early in the URL, also alphanumeric) isn't
-    // mistaken for the tokenId.
-    const idx = resolvedImageUrl.lastIndexOf(refStr);
-    if (idx === -1) continue;
-    const before = resolvedImageUrl[idx - 1];
-    const after = resolvedImageUrl[idx + refStr.length];
-    if (!isBoundary(before) || !isBoundary(after)) continue;
-    return (
-      resolvedImageUrl.slice(0, idx) +
-      "{id}" +
-      resolvedImageUrl.slice(idx + refStr.length)
-    );
-  }
-  return null;
-}
-
-/**
- * Run precheck on a list of {address, sampleTokenId, is721, is1155}
- * entries. Returns a Map<address-lowercase, precheck-result>.
- *
- * Result fields:
- *   metadataBroken      — true if tokenURI reverted, returned empty, or
- *                         the JSON couldn't be resolved at all.
- *   tokenUriTemplate    — raw string returned by tokenURI/uri, useful
- *                         for client-side extrapolation to other tokens.
- *   sampleImageUrl      — the image field of the resolved JSON, mapped
- *                         to an https/data URL the browser can use as
- *                         `<img src>`. null on broken metadata.
- *   isOnChainMetadata   — tokenURI was a data: URI.
- */
-async function precheckMetadataBatch(client, batch) {
-  const results = new Map();
-  let uris;
-  try {
-    uris = await tokenUriBatch(client, batch);
-  } catch (err) {
-    // RPC-level failure — mark whole batch as un-prechecked, don't poison
-    // them as broken just because the RPC hiccuped.
-    for (const c of batch) {
-      results.set(c.address.toLowerCase(), { metadataChecked: false });
-    }
-    return results;
-  }
-
-  await Promise.all(
-    batch.map(async (c, i) => {
-      const addr = c.address.toLowerCase();
-      const rawUri = uris[i];
-      if (!rawUri) {
-        results.set(addr, {
-          metadataChecked: true,
-          metadataBroken: true,
-          tokenUriTemplate: null,
-          sampleImageUrl: null,
-          imageUrlTemplate: null,
-          isOnChainMetadata: false,
-        });
-        return;
-      }
-      const concrete = expandIdTemplate(rawUri, BigInt(c.sampleTokenId));
-      const isOnChain = concrete.startsWith("data:");
-      const json = await fetchMetadataJson(concrete);
-      if (!json) {
-        results.set(addr, {
-          metadataChecked: true,
-          metadataBroken: true,
-          tokenUriTemplate: rawUri,
-          sampleImageUrl: null,
-          imageUrlTemplate: null,
-          isOnChainMetadata: isOnChain,
-        });
-        return;
-      }
-      const rawImage = extractImageField(json);
-      const sampleImageUrl = rawImage ? resolveImageUriToHttps(rawImage) : null;
-      // If the resolved image URL contains the sample tokenId as a
-      // boundary-safe substring, derive an `{id}`-templated form. Lets
-      // the frontend paint every token without a per-token JSON fetch
-      // (and so without the worker / CORS dance for hosts like scatter).
-      const imageUrlTemplate = sampleImageUrl
-        ? buildImageUrlTemplate(sampleImageUrl, c.sampleTokenId)
-        : null;
-      results.set(addr, {
-        metadataChecked: true,
-        metadataBroken: false,
-        tokenUriTemplate: rawUri,
-        sampleImageUrl,
-        imageUrlTemplate,
-        isOnChainMetadata: isOnChain,
-      });
-    }),
-  );
-  return results;
-}
-
-const PRECHECK_BATCH_SIZE = 20; // smaller than enrichBatch — each entry triggers an HTTP fetch
-const PRECHECK_CONCURRENCY = 1; // sequential batches; HTTP gateways throttle aggressively
-
-async function precheckAll(collections) {
-  if (collections.length === 0) return new Map();
-  console.log(`Prechecking metadata for ${collections.length} collections...`);
-  const startTime = Date.now();
-  const out = new Map();
-
-  for (let i = 0; i < collections.length; i += PRECHECK_BATCH_SIZE) {
-    const batch = collections.slice(i, i + PRECHECK_BATCH_SIZE);
-    let lastErr = null;
-    let batchResults = null;
-    for (let attempt = 0; attempt < RPC_URLS.length; attempt++) {
-      const client = nextClient();
-      try {
-        batchResults = await precheckMetadataBatch(client, batch);
-        lastErr = null;
-        break;
-      } catch (err) {
-        lastErr = err;
-      }
-    }
-    if (batchResults) {
-      for (const [addr, res] of batchResults) out.set(addr, res);
-    } else {
-      console.warn(`  precheck batch ${i} failed: ${lastErr?.message}`);
-      for (const c of batch) {
-        out.set(c.address.toLowerCase(), { metadataChecked: false });
-      }
-    }
-
-    if (((i / PRECHECK_BATCH_SIZE) | 0) % 10 === 0 || i + PRECHECK_BATCH_SIZE >= collections.length) {
-      const pct = Math.round((Math.min(i + PRECHECK_BATCH_SIZE, collections.length) / collections.length) * 100);
-      const elapsed = Math.round((Date.now() - startTime) / 1000);
-      console.log(`  ${Math.min(i + PRECHECK_BATCH_SIZE, collections.length)}/${collections.length} (${pct}%), ${elapsed}s elapsed`);
-    }
-  }
-
-  let broken = 0;
-  let withImage = 0;
-  for (const r of out.values()) {
-    if (r.metadataBroken) broken++;
-    if (r.sampleImageUrl) withImage++;
-  }
-  console.log(`Precheck done: ${broken} broken, ${withImage} have sample images`);
-  return out;
-}
-
 // ── 3. Multicall enrichment ───────────────────────────────────────
 async function enrichBatch(client, addresses) {
   const calls = [];
@@ -1383,7 +1002,31 @@ async function main() {
       sampleTokenId: c.lowestTokenId ?? "1",
     })),
   ];
-  const precheckResults = await precheckAll(precheckTargets);
+  if (precheckTargets.length > 0) {
+    console.log(`Prechecking metadata for ${precheckTargets.length} collections...`);
+  }
+  const precheckResults = await precheckAll(precheckTargets, {
+    getClient: nextClient,
+    attempts: RPC_URLS.length,
+    onProgress: (done, total, elapsedMs) => {
+      // Log every 10 batches (200 collections) and at the end — matches
+      // the pre-refactor cadence so the GH Action output stays familiar.
+      const batchIdx = Math.floor(done / 20) - 1;
+      if (done >= total || (batchIdx >= 0 && batchIdx % 10 === 0)) {
+        const pct = Math.round((done / total) * 100);
+        const elapsed = Math.round(elapsedMs / 1000);
+        console.log(`  ${done}/${total} (${pct}%), ${elapsed}s elapsed`);
+      }
+    },
+  });
+  if (precheckTargets.length > 0) {
+    let broken = 0, withImage = 0;
+    for (const r of precheckResults.values()) {
+      if (r.metadataBroken) broken++;
+      if (r.sampleImageUrl) withImage++;
+    }
+    console.log(`Precheck done: ${broken} broken, ${withImage} have sample images`);
+  }
 
   // ── Merge with previous snapshot ────────────────────────────────
   /**
