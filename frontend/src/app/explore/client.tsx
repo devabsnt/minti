@@ -512,22 +512,20 @@ function LongTailCard({
   const name = collection.name || collection.address.slice(0, 10);
   const symbol = collection.symbol || "";
 
-  // Pick the lowest-known tokenId from the snapshot as the thumbnail source.
-  // Falls back to "1" then "0" if missing. useNftMetadata only fires when
-  // the tokenId is set.
+  // If the cron baked a sample image URL into the snapshot, paint from
+  // that — zero runtime fetches, no CORS dance, no RPC roundtrip. Falls
+  // back to useNftMetadata only when the snapshot doesn't have one (old
+  // collections pre-backfill, or freshly-deployed contracts the cron
+  // hasn't seen yet).
   const sampleTokenId =
     collection.lowestTokenId != null ? BigInt(collection.lowestTokenId) : 1n;
+  const snapshotImage = collection.sampleImageUrl ?? null;
   const { data: metadata } = useNftMetadata(
     collection.address as `0x${string}`,
-    sampleTokenId,
+    snapshotImage ? undefined : sampleTokenId,
     collection.is1155 && !collection.is721,
   );
-
-  // NftImage falls back to a "?" placeholder when src is empty/errored,
-  // so the card stays visible with name + stats even when every gateway
-  // 502s or the centralized metadata API is down. Vanishing on metadata
-  // failure caused legitimate collections (scatter / lootgo / pancakeswap
-  // / on-chain SVG) to flicker in then get pruned.
+  const imageSrc = snapshotImage || metadata?.image || "";
 
   const transferCount = collection.transferCount ?? 0;
   const uniqueHolders = collection.uniqueHolders ?? 0;
@@ -547,7 +545,7 @@ function LongTailCard({
       className="block border border-border rounded-xl overflow-hidden bg-background-secondary hover:border-mint/30 transition-all hover:shadow-lg hover:shadow-mint-glow"
     >
       <NftImage
-        src={metadata?.image || ""}
+        src={imageSrc}
         rawUri={metadata?.rawImageUri}
         alt={name}
         className="aspect-square w-full"
@@ -610,11 +608,13 @@ function TrendingHeroCard({
   const symbol = collection.symbol || "";
   const sampleTokenId =
     collection.lowestTokenId != null ? BigInt(collection.lowestTokenId) : 1n;
+  const snapshotImage = collection.sampleImageUrl ?? null;
   const { data: metadata } = useNftMetadata(
     collection.address as `0x${string}`,
-    sampleTokenId,
+    snapshotImage ? undefined : sampleTokenId,
     collection.is1155 && !collection.is721,
   );
+  const imageSrc = snapshotImage || metadata?.image || "";
 
   // Don't hide on isError — NftImage shows a "?" placeholder when src is
   // empty, so the trending slot keeps the collection name + live6h count
@@ -636,7 +636,7 @@ function TrendingHeroCard({
       {/* Thumbnail */}
       <div className="w-16 h-16 rounded-lg overflow-hidden border border-border flex-shrink-0">
         <NftImage
-          src={metadata?.image || ""}
+          src={imageSrc}
           rawUri={metadata?.rawImageUri}
           alt={name}
           className="w-16 h-16"

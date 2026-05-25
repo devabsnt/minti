@@ -8,8 +8,9 @@ import {
   useMemo,
   type ReactNode,
 } from "react";
-import { createPublicClient, http, type PublicClient } from "viem";
+import { createPublicClient, fallback, http, type PublicClient } from "viem";
 import { DEFAULT_RPCS, getChainById } from "@/config/chains";
+import { RPC_POOLS } from "@/lib/rpcPool";
 
 const RPC_STORAGE_KEY = "minti_rpc_overrides";
 
@@ -77,13 +78,31 @@ export function RpcProvider({ children }: { children: ReactNode }) {
   const getPublicClient = useCallback(
     (chainId: number): PublicClient => {
       const chain = getChainById(chainId);
-      const rpcUrl = getEffectiveRpc(chainId);
+      const userRpc = getEffectiveRpc(chainId);
+
+      // Build a fallback transport over EVERY RPC in the pool, not the
+      // single DEFAULT_RPC. Otherwise every parallel useNftMetadata call
+      // hammers one URL and gets 429'd. viem's fallback transport tries
+      // each in order, advancing on any error (including rate-limit),
+      // and re-ranks them periodically by latency.
+      //
+      // We also shuffle the starting index so concurrent client creations
+      // don't all begin with the same RPC — that turns N cards mounting
+      // at once into a natural round-robin instead of a thundering herd.
+      const poolUrls = RPC_POOLS[chainId] ?? [];
+      const merged = userRpc && !poolUrls.includes(userRpc)
+        ? [userRpc, ...poolUrls]
+        : (poolUrls.length > 0 ? poolUrls : [userRpc].filter(Boolean));
+      const start = Math.floor(Math.random() * merged.length);
+      const ordered = [...merged.slice(start), ...merged.slice(0, start)];
+
+      const transports = ordered.map((url) =>
+        http(url, { retryCount: 1, retryDelay: 250 }),
+      );
+
       return createPublicClient({
         chain,
-        transport: http(rpcUrl, {
-          retryCount: 3,
-          retryDelay: 1000,
-        }),
+        transport: fallback(transports, { rank: { interval: 30_000 } }),
         batch: {
           multicall: {
             batchSize: 50,

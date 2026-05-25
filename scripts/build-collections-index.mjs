@@ -15,8 +15,16 @@
  *      deployed (MARKETPLACE_ADDRESS unset or zero).
  *   4. Multicall enrichment — `name()`, `symbol()`, `totalSupply()`, ERC-165
  *      flags for newly-discovered contracts. Failures get null placeholders.
+ *   4b. Metadata precheck — `tokenURI(lowest)` + server-side metadata
+ *      JSON fetch for every newly-discovered contract (and previously-
+ *      known ones on FORCE_FULL_RESCAN or BACKFILL_METADATA). Stores
+ *      `sampleImageUrl` so the frontend can paint thumbnails without
+ *      runtime metadata fetches, and `metadataBroken: true` for tokens
+ *      whose JSON can't be resolved (dead DNS, all-gateway 404, etc.).
  *   5. Tier assignment — every collection gets a tier (0=hidden, 1=indexed,
  *      2=explore-eligible, 3=featured) computed from the gathered stats.
+ *      metadataBroken=true collapses to tier 0 so broken collections never
+ *      reach the explore grid.
  *   6. Write `frontend/public/data/monad-collections.json`.
  *
  * Concentration metrics (top1HolderPct, top10HolderPct, holderRatio) are
@@ -31,6 +39,9 @@
  *   MAX_BLOCKS          optional, cap on blocks scanned (debug)
  *   ENRICH_LIMIT        optional, cap on contracts enriched (debug)
  *   FORCE_FULL_RESCAN   optional, "1" ignores previous snapshot
+ *   BACKFILL_METADATA   optional, "1" re-prechecks every previously-known
+ *                       collection that doesn't yet have metadataChecked.
+ *                       Use once after this feature ships, then leave unset.
  *
  * Run:
  *   cd scripts && npm install
@@ -69,6 +80,11 @@ const RPC_URLS = (process.env.MONAD_RPC || DEFAULT_RPCS.join(","))
 const MAX_BLOCKS = process.env.MAX_BLOCKS ? Number(process.env.MAX_BLOCKS) : Infinity;
 const ENRICH_LIMIT = process.env.ENRICH_LIMIT ? Number(process.env.ENRICH_LIMIT) : Infinity;
 const FORCE_FULL_RESCAN = process.env.FORCE_FULL_RESCAN === "1";
+// When set, re-runs the metadata precheck on every previously-known
+// collection that doesn't already have `metadataChecked: true`. Use once
+// after the precheck feature first ships to backfill the existing
+// snapshot. Subsequent runs only precheck newly-discovered contracts.
+const BACKFILL_METADATA = process.env.BACKFILL_METADATA === "1";
 
 const MARKETPLACE_ADDRESS_RAW = process.env.MARKETPLACE_ADDRESS || "";
 const MARKETPLACE_ADDRESS =
@@ -170,6 +186,23 @@ const ABI = [
     name: "supportsInterface",
     inputs: [{ type: "bytes4", name: "interfaceId" }],
     outputs: [{ type: "bool" }],
+    stateMutability: "view",
+    type: "function",
+  },
+];
+
+const TOKEN_URI_ABI = [
+  {
+    name: "tokenURI",
+    inputs: [{ type: "uint256", name: "tokenId" }],
+    outputs: [{ type: "string" }],
+    stateMutability: "view",
+    type: "function",
+  },
+  {
+    name: "uri",
+    inputs: [{ type: "uint256", name: "id" }],
+    outputs: [{ type: "string" }],
     stateMutability: "view",
     type: "function",
   },
@@ -736,6 +769,289 @@ async function scanMarketplaceSales(currentBlock, itemSoldTopic) {
   return out;
 }
 
+// ── 3a. Metadata precheck ────────────────────────────────────────
+//
+// For each collection, fetch tokenURI(lowestTokenId || 1) and try to
+// resolve the metadata JSON server-side. We then bake the discovered
+// image URL into the snapshot so the frontend can paint thumbnails on
+// the explore grid with ZERO runtime metadata fetches. Collections whose
+// metadata can't be resolved at all are flagged so assignTier can hide
+// them — that's how codepunks-style permanently-dead collections stop
+// spamming the user's console.
+//
+// Server-side has no CORS, so this also captures collections that the
+// browser can't reach directly (scatter.art, R2 buckets without CORS,
+// etc.). The frontend gets the resolved image URL even though it could
+// never have produced it itself.
+
+// Public IPFS gateways — racing these gives us best-of-N latency on
+// cold reads. Same set we use client-side, minus dweb.link (chronic 504).
+const PRECHECK_IPFS_GATEWAYS = [
+  "https://ipfs.io/ipfs/",
+  "https://w3s.link/ipfs/",
+  "https://4everland.io/ipfs/",
+];
+
+const PRECHECK_FETCH_TIMEOUT_MS = 8_000;
+
+// CIDv1 (base32 sha256, 59 chars) OR CIDv0 (Qm-prefix base58, 46 chars).
+const CID_RE = /(Qm[1-9A-HJ-NP-Za-km-z]{44}|baf[a-z2-7]{52,})/i;
+
+function looksLikeCid(s) {
+  return !!s && CID_RE.test(s) && new RegExp(`^${CID_RE.source}$`, "i").test(s);
+}
+
+function parseIpfsLike(uri) {
+  if (!uri) return null;
+  if (uri.startsWith("ipfs://")) {
+    const rest = uri.slice("ipfs://".length);
+    const slash = rest.indexOf("/");
+    const cid = slash >= 0 ? rest.slice(0, slash) : rest;
+    const path = slash >= 0 ? rest.slice(slash) : "";
+    if (looksLikeCid(cid)) return { cid, path };
+  }
+  const sub = uri.match(/^https?:\/\/([^./]+)\.ipfs\.[^/]+(\/.*)?$/);
+  if (sub && looksLikeCid(sub[1])) return { cid: sub[1], path: sub[2] || "" };
+  const pth = uri.match(/^https?:\/\/[^/]+\/ipfs\/([^/?#]+)(\/[^?#]*)?(\?[^#]*)?$/);
+  if (pth && looksLikeCid(pth[1])) {
+    return { cid: pth[1], path: (pth[2] || "") + (pth[3] || "") };
+  }
+  return null;
+}
+
+function resolveImageUriToHttps(image) {
+  if (!image || typeof image !== "string") return null;
+  if (image.startsWith("data:")) return image;
+  if (image.startsWith("ar://")) {
+    return "https://arweave.net/" + image.slice("ar://".length);
+  }
+  const ipfs = parseIpfsLike(image);
+  if (ipfs) return `${PRECHECK_IPFS_GATEWAYS[0]}${ipfs.cid}${ipfs.path}`;
+  if (image.startsWith("http://") || image.startsWith("https://")) return image;
+  return null;
+}
+
+function decodeDataUriJson(uri) {
+  if (uri.startsWith("data:application/json;base64,")) {
+    return Buffer.from(uri.slice("data:application/json;base64,".length), "base64").toString("utf8");
+  }
+  if (uri.startsWith("data:application/json,")) {
+    return decodeURIComponent(uri.slice("data:application/json,".length));
+  }
+  if (uri.startsWith("data:application/json;utf8,")) {
+    return uri.slice("data:application/json;utf8,".length);
+  }
+  return null;
+}
+
+async function fetchWithTimeout(url, ms) {
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), ms);
+  try {
+    const resp = await fetch(url, { signal: ctrl.signal });
+    if (!resp.ok) throw new Error(`${resp.status}`);
+    return await resp.text();
+  } finally {
+    clearTimeout(t);
+  }
+}
+
+async function fetchMetadataJson(uri) {
+  if (!uri) return null;
+  if (uri.startsWith("data:")) {
+    const decoded = decodeDataUriJson(uri);
+    if (!decoded) return null;
+    try { return JSON.parse(decoded); } catch { return null; }
+  }
+  // IPFS-shaped: race public gateways. Any 200 wins.
+  const ipfs = parseIpfsLike(uri);
+  if (ipfs) {
+    const ctrls = PRECHECK_IPFS_GATEWAYS.map(() => new AbortController());
+    const attempts = PRECHECK_IPFS_GATEWAYS.map(async (gw, i) => {
+      const t = setTimeout(() => ctrls[i].abort(), PRECHECK_FETCH_TIMEOUT_MS);
+      try {
+        const resp = await fetch(`${gw}${ipfs.cid}${ipfs.path}`, { signal: ctrls[i].signal });
+        if (!resp.ok) throw new Error(`${resp.status}`);
+        return await resp.text();
+      } finally {
+        clearTimeout(t);
+      }
+    });
+    try {
+      const text = await Promise.any(attempts);
+      ctrls.forEach((c) => c.abort());
+      try { return JSON.parse(text); } catch { return null; }
+    } catch {
+      return null;
+    }
+  }
+  // Centralized URL. Node has no CORS, so a direct fetch reaches scatter
+  // and friends even if the browser can't.
+  if (uri.startsWith("http://") || uri.startsWith("https://")) {
+    try {
+      const text = await fetchWithTimeout(uri, PRECHECK_FETCH_TIMEOUT_MS);
+      try { return JSON.parse(text); } catch { return null; }
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+/**
+ * Multicall tokenURI/uri for a batch of contracts. Pads token id variants
+ * for {id}-template URIs (ERC-1155 spec) and substitutes them so the
+ * returned string is a concrete URL ready to fetch.
+ */
+async function tokenUriBatch(client, contracts) {
+  const calls = contracts.map((c) => ({
+    address: c.address,
+    abi: TOKEN_URI_ABI,
+    functionName: c.is1155 && !c.is721 ? "uri" : "tokenURI",
+    args: [BigInt(c.sampleTokenId)],
+  }));
+  const results = await client.multicall({
+    contracts: calls,
+    multicallAddress: MULTICALL3,
+    allowFailure: true,
+  });
+  return results.map((r) =>
+    r.status === "success" && typeof r.result === "string" && r.result.length > 0
+      ? r.result
+      : null,
+  );
+}
+
+function expandIdTemplate(uri, tokenId) {
+  if (!uri || !uri.includes("{id}")) return uri;
+  const dec = tokenId.toString();
+  const hex64 = tokenId.toString(16).padStart(64, "0");
+  // ERC-1155 spec wants the 64-char padded hex; some collections shipped
+  // decimal anyway. Try padded first since that's what the spec mandates.
+  return uri.replace(/\{id\}/g, hex64).replace(/\{decimalId\}/g, dec);
+}
+
+/**
+ * Run precheck on a list of {address, sampleTokenId, is721, is1155}
+ * entries. Returns a Map<address-lowercase, precheck-result>.
+ *
+ * Result fields:
+ *   metadataBroken      — true if tokenURI reverted, returned empty, or
+ *                         the JSON couldn't be resolved at all.
+ *   tokenUriTemplate    — raw string returned by tokenURI/uri, useful
+ *                         for client-side extrapolation to other tokens.
+ *   sampleImageUrl      — the image field of the resolved JSON, mapped
+ *                         to an https/data URL the browser can use as
+ *                         `<img src>`. null on broken metadata.
+ *   isOnChainMetadata   — tokenURI was a data: URI.
+ */
+async function precheckMetadataBatch(client, batch) {
+  const results = new Map();
+  let uris;
+  try {
+    uris = await tokenUriBatch(client, batch);
+  } catch (err) {
+    // RPC-level failure — mark whole batch as un-prechecked, don't poison
+    // them as broken just because the RPC hiccuped.
+    for (const c of batch) {
+      results.set(c.address.toLowerCase(), { metadataChecked: false });
+    }
+    return results;
+  }
+
+  await Promise.all(
+    batch.map(async (c, i) => {
+      const addr = c.address.toLowerCase();
+      const rawUri = uris[i];
+      if (!rawUri) {
+        results.set(addr, {
+          metadataChecked: true,
+          metadataBroken: true,
+          tokenUriTemplate: null,
+          sampleImageUrl: null,
+          isOnChainMetadata: false,
+        });
+        return;
+      }
+      const concrete = expandIdTemplate(rawUri, BigInt(c.sampleTokenId));
+      const isOnChain = concrete.startsWith("data:");
+      const json = await fetchMetadataJson(concrete);
+      if (!json) {
+        results.set(addr, {
+          metadataChecked: true,
+          metadataBroken: true,
+          tokenUriTemplate: rawUri,
+          sampleImageUrl: null,
+          isOnChainMetadata: isOnChain,
+        });
+        return;
+      }
+      const rawImage =
+        (typeof json.image === "string" && json.image) ||
+        (typeof json.image_url === "string" && json.image_url) ||
+        null;
+      const sampleImageUrl = rawImage ? resolveImageUriToHttps(rawImage) : null;
+      results.set(addr, {
+        metadataChecked: true,
+        metadataBroken: false,
+        tokenUriTemplate: rawUri,
+        sampleImageUrl,
+        isOnChainMetadata: isOnChain,
+      });
+    }),
+  );
+  return results;
+}
+
+const PRECHECK_BATCH_SIZE = 20; // smaller than enrichBatch — each entry triggers an HTTP fetch
+const PRECHECK_CONCURRENCY = 1; // sequential batches; HTTP gateways throttle aggressively
+
+async function precheckAll(collections) {
+  if (collections.length === 0) return new Map();
+  console.log(`Prechecking metadata for ${collections.length} collections...`);
+  const startTime = Date.now();
+  const out = new Map();
+
+  for (let i = 0; i < collections.length; i += PRECHECK_BATCH_SIZE) {
+    const batch = collections.slice(i, i + PRECHECK_BATCH_SIZE);
+    let lastErr = null;
+    let batchResults = null;
+    for (let attempt = 0; attempt < RPC_URLS.length; attempt++) {
+      const client = nextClient();
+      try {
+        batchResults = await precheckMetadataBatch(client, batch);
+        lastErr = null;
+        break;
+      } catch (err) {
+        lastErr = err;
+      }
+    }
+    if (batchResults) {
+      for (const [addr, res] of batchResults) out.set(addr, res);
+    } else {
+      console.warn(`  precheck batch ${i} failed: ${lastErr?.message}`);
+      for (const c of batch) {
+        out.set(c.address.toLowerCase(), { metadataChecked: false });
+      }
+    }
+
+    if (((i / PRECHECK_BATCH_SIZE) | 0) % 10 === 0 || i + PRECHECK_BATCH_SIZE >= collections.length) {
+      const pct = Math.round((Math.min(i + PRECHECK_BATCH_SIZE, collections.length) / collections.length) * 100);
+      const elapsed = Math.round((Date.now() - startTime) / 1000);
+      console.log(`  ${Math.min(i + PRECHECK_BATCH_SIZE, collections.length)}/${collections.length} (${pct}%), ${elapsed}s elapsed`);
+    }
+  }
+
+  let broken = 0;
+  let withImage = 0;
+  for (const r of out.values()) {
+    if (r.metadataBroken) broken++;
+    if (r.sampleImageUrl) withImage++;
+  }
+  console.log(`Precheck done: ${broken} broken, ${withImage} have sample images`);
+  return out;
+}
+
 // ── 3. Multicall enrichment ───────────────────────────────────────
 async function enrichBatch(client, addresses) {
   const calls = [];
@@ -858,6 +1174,10 @@ function assignTier(c) {
   if (transfers < 5) return 0;
   if (!c.is721 && !c.is1155 && !c.name) return 0;
   if (mints > 0 && transfers === mints && holders < 50) return 0; // mint-and-dead microdust
+  // Server-side metadata precheck failed — token doesn't resolve from
+  // anywhere. Hide so the user's console isn't spammed at runtime trying
+  // to refetch it.
+  if (c.metadataBroken === true) return 0;
 
   // Concentration hide (only when we have a value)
   if (typeof c.top10HolderPct === "number" && c.top10HolderPct > 0.95) return 0;
@@ -928,6 +1248,37 @@ async function main() {
   } else {
     console.log("No new contracts to enrich — only the block cursor advanced.");
   }
+
+  // ── Metadata precheck ──────────────────────────────────────────
+  // Run for: all newly-discovered contracts (small) + on FORCE_FULL_RESCAN
+  // or BACKFILL_METADATA, every previously-known collection that isn't
+  // already marked as checked. Skips collections we know to be tier-0
+  // spam from name/symbol patterns to avoid wasting fetches on garbage.
+  const previousNeedingPrecheck =
+    (FORCE_FULL_RESCAN || BACKFILL_METADATA)
+      ? previousCollections.filter(
+          (c) =>
+            !c.metadataChecked &&
+            (c.name || c.symbol) &&
+            !SPAM_NAME_RE.test(c.name || "") &&
+            !SPAM_NAME_RE.test(c.symbol || ""),
+        )
+      : [];
+  const precheckTargets = [
+    ...newFiltered.map((c) => ({
+      address: c.address,
+      is721: c.is721,
+      is1155: c.is1155,
+      sampleTokenId: (statsByAddress[c.address.toLowerCase()]?.lowestTokenId) ?? "1",
+    })),
+    ...previousNeedingPrecheck.map((c) => ({
+      address: c.address,
+      is721: c.is721,
+      is1155: c.is1155,
+      sampleTokenId: c.lowestTokenId ?? "1",
+    })),
+  ];
+  const precheckResults = await precheckAll(precheckTargets);
 
   // ── Merge with previous snapshot ────────────────────────────────
   /**
@@ -1011,6 +1362,24 @@ async function main() {
       uniqueSellers24h: sale?.uniqueSellers24h ?? 0,
       uniqueSellers7d: sale?.uniqueSellers7d ?? 0,
     };
+    // Apply this run's precheck result if we re-checked this collection;
+    // otherwise carry forward the previous flags so they don't get lost
+    // on delta runs.
+    const fresh = precheckResults.get(merged.address.toLowerCase());
+    if (fresh && fresh.metadataChecked) {
+      merged.metadataChecked = true;
+      merged.metadataBroken = !!fresh.metadataBroken;
+      merged.tokenUriTemplate = fresh.tokenUriTemplate ?? null;
+      merged.sampleImageUrl = fresh.sampleImageUrl ?? null;
+      merged.isOnChainMetadata = !!fresh.isOnChainMetadata;
+    } else {
+      // Preserve previous values (col already has them via ...col)
+      merged.metadataChecked = col.metadataChecked ?? false;
+      merged.metadataBroken = col.metadataBroken ?? false;
+      merged.tokenUriTemplate = col.tokenUriTemplate ?? null;
+      merged.sampleImageUrl = col.sampleImageUrl ?? null;
+      merged.isOnChainMetadata = col.isOnChainMetadata ?? false;
+    }
     // Compute holderRatio for storage convenience (handles totalSupply parsing once)
     if (merged.totalSupply) {
       const supply = Number(merged.totalSupply);
@@ -1061,6 +1430,20 @@ async function main() {
       uniqueSellers24h: sale?.uniqueSellers24h ?? 0,
       uniqueSellers7d: sale?.uniqueSellers7d ?? 0,
     };
+    const fresh = precheckResults.get(merged.address.toLowerCase());
+    if (fresh) {
+      merged.metadataChecked = !!fresh.metadataChecked;
+      merged.metadataBroken = !!fresh.metadataBroken;
+      merged.tokenUriTemplate = fresh.tokenUriTemplate ?? null;
+      merged.sampleImageUrl = fresh.sampleImageUrl ?? null;
+      merged.isOnChainMetadata = !!fresh.isOnChainMetadata;
+    } else {
+      merged.metadataChecked = false;
+      merged.metadataBroken = false;
+      merged.tokenUriTemplate = null;
+      merged.sampleImageUrl = null;
+      merged.isOnChainMetadata = false;
+    }
     if (merged.totalSupply) {
       const supply = Number(merged.totalSupply);
       if (supply > 0) {
@@ -1079,7 +1462,7 @@ async function main() {
     chainId: CHAIN_ID,
     lastBlock,
     builtAt: Date.now(),
-    schemaVersion: 4,
+    schemaVersion: 5,
     marketplaceAddress: MARKETPLACE_ADDRESS,
     fullRescan: FORCE_FULL_RESCAN,
     collections: merged,
@@ -1088,14 +1471,24 @@ async function main() {
   mkdirSync(path.dirname(SNAPSHOT_PATH), { recursive: true });
   writeFileSync(SNAPSHOT_PATH, JSON.stringify(snapshot));
   const sizeKb = (JSON.stringify(snapshot).length / 1024).toFixed(0);
-  // Tier histogram
+  // Tier + metadata histogram
   const tierCounts = { 0: 0, 1: 0, 2: 0, 3: 0 };
-  for (const c of merged) tierCounts[c.tier ?? 0]++;
+  let mdChecked = 0, mdBroken = 0, mdWithImage = 0, mdOnChain = 0;
+  for (const c of merged) {
+    tierCounts[c.tier ?? 0]++;
+    if (c.metadataChecked) mdChecked++;
+    if (c.metadataBroken) mdBroken++;
+    if (c.sampleImageUrl) mdWithImage++;
+    if (c.isOnChainMetadata) mdOnChain++;
+  }
   console.log(
     `Wrote ${SNAPSHOT_PATH} (${sizeKb} KB, ${merged.length} total, +${newFiltered.length} new this run)`,
   );
   console.log(
     `Tiers: T0=${tierCounts[0]} hidden, T1=${tierCounts[1]} indexed, T2=${tierCounts[2]} explore, T3=${tierCounts[3]} curated`,
+  );
+  console.log(
+    `Metadata: ${mdChecked}/${merged.length} checked, ${mdBroken} broken, ${mdWithImage} with sample image, ${mdOnChain} on-chain`,
   );
 }
 

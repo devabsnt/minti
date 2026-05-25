@@ -63,6 +63,19 @@ export interface IndexedCollection {
   // 2 = explore-eligible (real activity)
   // 3 = curated (registry — assigned client-side, never by the build script)
   tier?: 0 | 1 | 2 | 3;
+  // ─── metadata precheck (schema v5+) ───
+  // `metadataChecked` flips true after the cron's server-side precheck
+  // ran. `metadataBroken` is true when tokenURI reverted or the JSON
+  // couldn't be resolved anywhere; assignTier collapses those to tier 0
+  // so they don't render.
+  // `sampleImageUrl` is the resolved image of the lowest-known token —
+  // bake it into the snapshot so explore cards can paint thumbnails
+  // with zero runtime fetches.
+  metadataChecked?: boolean;
+  metadataBroken?: boolean;
+  tokenUriTemplate?: string | null;
+  sampleImageUrl?: string | null;
+  isOnChainMetadata?: boolean;
 }
 
 /** Time-window options for "Trending" sort. */
