@@ -513,18 +513,17 @@ function LongTailCard({
   // the tokenId is set.
   const sampleTokenId =
     collection.lowestTokenId != null ? BigInt(collection.lowestTokenId) : 1n;
-  const { data: metadata, isError, isLoading } = useNftMetadata(
+  const { data: metadata } = useNftMetadata(
     collection.address as `0x${string}`,
     sampleTokenId,
     collection.is1155 && !collection.is721,
   );
 
-  // Only hide on a hard error (every gateway exhausted). Cards that just
-  // happen to have no image yet still render with the "?" placeholder
-  // instead of vanishing — otherwise legitimate on-chain SVG collections
-  // and freshly-minted ones get pruned the moment metadata resolves
-  // empty.
-  if (isError) return null;
+  // NftImage falls back to a "?" placeholder when src is empty/errored,
+  // so the card stays visible with name + stats even when every gateway
+  // 502s or the centralized metadata API is down. Vanishing on metadata
+  // failure caused legitimate collections (scatter / lootgo / pancakeswap
+  // / on-chain SVG) to flicker in then get pruned.
 
   const transferCount = collection.transferCount ?? 0;
   const uniqueHolders = collection.uniqueHolders ?? 0;
@@ -607,16 +606,15 @@ function TrendingHeroCard({
   const symbol = collection.symbol || "";
   const sampleTokenId =
     collection.lowestTokenId != null ? BigInt(collection.lowestTokenId) : 1n;
-  const { data: metadata, isError } = useNftMetadata(
+  const { data: metadata } = useNftMetadata(
     collection.address as `0x${string}`,
     sampleTokenId,
     collection.is1155 && !collection.is721,
   );
 
-  // Only hide on hard error. NftImage falls back to a "?" placeholder for
-  // empty-image cases so freshly-minted / on-chain SVG collections still
-  // appear in trending while their metadata resolves.
-  if (isError) return null;
+  // Don't hide on isError — NftImage shows a "?" placeholder when src is
+  // empty, so the trending slot keeps the collection name + live6h count
+  // even when metadata gateways are temporarily 502ing.
 
   const m = momentum(collection);
   const momentumPct = m != null ? Math.round(m * 100) : null;
