@@ -85,6 +85,12 @@ const FORCE_FULL_RESCAN = process.env.FORCE_FULL_RESCAN === "1";
 // after the precheck feature first ships to backfill the existing
 // snapshot. Subsequent runs only precheck newly-discovered contracts.
 const BACKFILL_METADATA = process.env.BACKFILL_METADATA === "1";
+// When set, re-prechecks collections that ARE marked metadataChecked but
+// came back with no usable sample image. Cheaper than a full backfill —
+// targets only the ones where the prior run's narrower JSON extraction
+// likely missed the image field. Use after widening extractImageField()
+// or otherwise changing precheck behavior.
+const FORCE_METADATA_RECHECK = process.env.FORCE_METADATA_RECHECK === "1";
 
 const MARKETPLACE_ADDRESS_RAW = process.env.MARKETPLACE_ADDRESS || "";
 const MARKETPLACE_ADDRESS =
@@ -1341,14 +1347,27 @@ async function main() {
   // already marked as checked. Skips collections we know to be tier-0
   // spam from name/symbol patterns to avoid wasting fetches on garbage.
   const previousNeedingPrecheck =
-    (FORCE_FULL_RESCAN || BACKFILL_METADATA)
-      ? previousCollections.filter(
-          (c) =>
-            !c.metadataChecked &&
-            (c.name || c.symbol) &&
-            !SPAM_NAME_RE.test(c.name || "") &&
-            !SPAM_NAME_RE.test(c.symbol || ""),
-        )
+    (FORCE_FULL_RESCAN || BACKFILL_METADATA || FORCE_METADATA_RECHECK)
+      ? previousCollections.filter((c) => {
+          if (!c.name && !c.symbol) return false;
+          if (SPAM_NAME_RE.test(c.name || "") || SPAM_NAME_RE.test(c.symbol || "")) return false;
+          // Backfill: catch anything that's never been checked
+          if (BACKFILL_METADATA && !c.metadataChecked) return true;
+          if (FORCE_FULL_RESCAN && !c.metadataChecked) return true;
+          // Recheck: catch ones that WERE checked but came back without a
+          // sample image and aren't permanently broken. These are most
+          // likely cases where extractImageField didn't match the JSON's
+          // image field on the prior run.
+          if (
+            FORCE_METADATA_RECHECK &&
+            c.metadataChecked &&
+            !c.metadataBroken &&
+            !c.sampleImageUrl
+          ) {
+            return true;
+          }
+          return false;
+        })
       : [];
   const precheckTargets = [
     ...newFiltered.map((c) => ({
@@ -1467,6 +1486,14 @@ async function main() {
       merged.sampleImageUrl = col.sampleImageUrl ?? null;
       merged.imageUrlTemplate = col.imageUrlTemplate ?? null;
       merged.isOnChainMetadata = col.isOnChainMetadata ?? false;
+    }
+    // Retroactive: derive the template from sampleImageUrl + lowestTokenId
+    // when we have an image but no template yet. Pure local computation,
+    // no HTTP — fills in the field for the ~36k collections whose images
+    // were captured before this code shipped.
+    if (merged.sampleImageUrl && !merged.imageUrlTemplate) {
+      const sampleTid = merged.lowestTokenId ?? "1";
+      merged.imageUrlTemplate = buildImageUrlTemplate(merged.sampleImageUrl, sampleTid);
     }
     // Compute holderRatio for storage convenience (handles totalSupply parsing once)
     if (merged.totalSupply) {

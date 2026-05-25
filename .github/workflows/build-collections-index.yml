@@ -20,6 +20,11 @@ on:
         required: false
         type: boolean
         default: false
+      force_metadata_recheck:
+        description: "Re-precheck collections that ARE checked but came back without a sample image. Cheaper than backfill — use after widening the image-field extraction."
+        required: false
+        type: boolean
+        default: false
       max_blocks:
         description: "Cap on blocks scanned (debug). Leave empty for full chain."
         required: false
@@ -64,6 +69,11 @@ jobs:
           # the input to true the first time the precheck feature ships,
           # then leave it off for normal runs.
           BACKFILL_METADATA: ${{ inputs.backfill_metadata && '1' || '' }}
+          # Force metadata recheck: re-precheck the subset that came back
+          # without a sample image. Targets the population that benefits
+          # from a widened JSON extraction; much cheaper than a full
+          # backfill.
+          FORCE_METADATA_RECHECK: ${{ inputs.force_metadata_recheck && '1' || '' }}
           # Marketplace address — falls through to "not deployed" if unset.
           # Once MintiMarketplace is deployed on Monad, set this secret to
           # the deployed address and ItemSold events start populating
