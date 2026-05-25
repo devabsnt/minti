@@ -1,4 +1,5 @@
 import type { ChainSource, ChainLog } from "./source.js";
+import { env } from "../env.js";
 import {
   TRANSFER_TOPIC,
   ingestTransferLogs,
@@ -32,8 +33,10 @@ const CHUNK_SIZE = 10_000;
 const WAVE_SIZE = 5; // matches the size of the Monad public RPC pool
 const RETRY_BACKOFF_MS = 5_000;
 const MONAD_AVG_BLOCK_MS = 500;
-// Estimated genesis timestamp. Used only for early-block activity rows;
-// the polling loop replaces with real timestamps once it takes over.
+const BLOCKS_PER_DAY = (24 * 60 * 60 * 1000) / MONAD_AVG_BLOCK_MS;
+// Estimated genesis timestamp. Used only for early-block activity rows
+// when we don't have real per-block timestamps; close enough for sort
+// order. Polling captures real `now()` for each event.
 const GENESIS_TIME = new Date("2026-01-01T00:00:00Z").getTime();
 
 export interface BootstrapResult {
@@ -78,11 +81,21 @@ export async function runBootstrap(
 ): Promise<BootstrapResult> {
   const start = Date.now();
   const resumeAt = await getTransferCursor();
-  const fromBlock = opts.startBlock ?? (resumeAt != null ? resumeAt + 1 : 0);
   const tip = opts.endBlock ?? (await source.getCurrentBlock());
 
+  // Bounded indexer: bootstrap covers only the retention window. Older
+  // history is intentionally not indexed — keeps storage bounded by
+  // design, no separate "backfill+prune" dance. A token whose last
+  // Transfer was before this cutoff simply doesn't appear in our DB
+  // until it transfers again (the polling loop will catch it then).
+  const retentionCutoff = Math.max(0, tip - Math.floor(env.RETENTION_DAYS * BLOCKS_PER_DAY));
+  const cursorOrCutoff = resumeAt != null
+    ? Math.max(resumeAt + 1, retentionCutoff)
+    : retentionCutoff;
+  const fromBlock = opts.startBlock ?? cursorOrCutoff;
+
   console.log(
-    `[bootstrap] starting: fromBlock=${fromBlock}, tip=${tip}, chunk=${CHUNK_SIZE}, wave=${WAVE_SIZE}`,
+    `[bootstrap] starting: fromBlock=${fromBlock}, tip=${tip}, retentionDays=${env.RETENTION_DAYS} (cutoff=${retentionCutoff}), chunk=${CHUNK_SIZE}, wave=${WAVE_SIZE}`,
   );
   if (fromBlock > tip) {
     console.log(`[bootstrap] already caught up (cursor=${resumeAt}, tip=${tip})`);

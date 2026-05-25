@@ -3,6 +3,7 @@ import { cors } from "hono/cors";
 import { logger } from "hono/logger";
 import { env } from "../env.js";
 import { apiRateLimit } from "./middleware/rate-limit.js";
+import { collectionsRoutes } from "./routes/collections.js";
 import { health } from "./routes/health.js";
 
 /**
@@ -39,6 +40,7 @@ export function buildServer() {
   // health checker can hit it as often as it wants without consuming
   // a user's quota.
   app.route("/health", health);
+  app.route("/api/collections", collectionsRoutes);
 
   // Root just returns metadata so curl-ing the bare URL is not a 404.
   app.get("/", (c) =>

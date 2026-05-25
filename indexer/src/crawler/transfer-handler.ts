@@ -1,6 +1,6 @@
 import { sql } from "drizzle-orm";
 import { db } from "../db/client.js";
-import { activity, collections, crawlerState } from "../db/schema.js";
+import { activity, collections, crawlerState, tokens } from "../db/schema.js";
 import type { ChainLog } from "./source.js";
 
 /**
@@ -66,13 +66,24 @@ function parseTransfer(log: ChainLog): {
 export async function ingestTransferLogs(
   logs: readonly ChainLog[],
   blockTimestamps: Map<number, Date>,
-): Promise<{ activityRows: number; collectionsTouched: number }> {
+): Promise<{ activityRows: number; collectionsTouched: number; tokensTouched: number }> {
   if (logs.length === 0) {
-    return { activityRows: 0, collectionsTouched: 0 };
+    return { activityRows: 0, collectionsTouched: 0, tokensTouched: 0 };
   }
 
   const activityRows: typeof activity.$inferInsert[] = [];
   const collectionFirstSeen = new Map<string, number>();
+  // Per-token "latest transfer in this batch". The DB upsert below uses
+  // GREATEST(last_transfer_block, EXCLUDED.last_transfer_block) so we
+  // could insert every transfer and let Postgres pick — but de-duping in
+  // memory shrinks the batch dramatically for tokens that change hands
+  // multiple times in one wave. Easier on the connection too.
+  const tokenLatest = new Map<string, {
+    contract: string;
+    tokenId: string;
+    owner: string;
+    lastBlock: number;
+  }>();
 
   for (const log of logs) {
     const parsed = parseTransfer(log);
@@ -92,12 +103,24 @@ export async function ingestTransferLogs(
       timestamp: ts,
     });
 
-    // Track the FIRST block we see each contract emit a Transfer. We
-    // de-dupe within this batch, then ON CONFLICT keeps the smaller
-    // value across batches.
     const existing = collectionFirstSeen.get(parsed.contract);
     if (existing == null || log.blockNumber < existing) {
       collectionFirstSeen.set(parsed.contract, log.blockNumber);
+    }
+
+    // Track the most-recent-in-batch owner per token. Burns set owner
+    // to 0x0 which marks the token as burned — we keep the row because
+    // frontend may want to count burns / show "burned" state, and the
+    // owner=0x0 record is the canonical signal.
+    const tokenKey = `${parsed.contract}:${parsed.tokenId}`;
+    const cur = tokenLatest.get(tokenKey);
+    if (!cur || log.blockNumber > cur.lastBlock) {
+      tokenLatest.set(tokenKey, {
+        contract: parsed.contract,
+        tokenId: parsed.tokenId,
+        owner: parsed.to,
+        lastBlock: log.blockNumber,
+      });
     }
   }
 
@@ -132,9 +155,35 @@ export async function ingestTransferLogs(
       });
   }
 
+  // Upsert tokens: ownership state. Higher block wins regardless of
+  // insert order — robust against any out-of-order processing.
+  const TOKENS_BATCH = 500;
+  const tokenRows = Array.from(tokenLatest.values()).map((t) => ({
+    contract: t.contract,
+    tokenId: t.tokenId,
+    owner: t.owner,
+    lastTransferBlock: t.lastBlock,
+  }));
+  for (let i = 0; i < tokenRows.length; i += TOKENS_BATCH) {
+    const slice = tokenRows.slice(i, i + TOKENS_BATCH);
+    if (slice.length === 0) continue;
+    await db
+      .insert(tokens)
+      .values(slice)
+      .onConflictDoUpdate({
+        target: [tokens.contract, tokens.tokenId],
+        set: {
+          owner: sql`CASE WHEN EXCLUDED.last_transfer_block > ${tokens.lastTransferBlock} THEN EXCLUDED.owner ELSE ${tokens.owner} END`,
+          lastTransferBlock: sql`GREATEST(${tokens.lastTransferBlock}, EXCLUDED.last_transfer_block)`,
+          updatedAt: sql`now()`,
+        },
+      });
+  }
+
   return {
     activityRows: activityRows.length,
     collectionsTouched: collectionFirstSeen.size,
+    tokensTouched: tokenLatest.size,
   };
 }
 

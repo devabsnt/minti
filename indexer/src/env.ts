@@ -37,6 +37,40 @@ const schema = z.object({
     .string()
     .default("1")
     .transform((s) => s === "1" || s.toLowerCase() === "true"),
+  RUN_ENRICHMENT: z
+    .string()
+    .default("0")
+    .transform((s) => s === "1" || s.toLowerCase() === "true"),
+  // How many days of chain history the indexer maintains in the activity
+  // table. Transfers older than this get pruned daily. Mints, burns, and
+  // marketplace events (future) are kept regardless. Default 60.
+  RETENTION_DAYS: z
+    .string()
+    .default("60")
+    .transform((s) => parseInt(s, 10))
+    .refine((n) => n >= 1, "RETENTION_DAYS must be >= 1"),
+  // Stats refresh cadence — how often the indexer recomputes
+  // transfer_count / unique_holders / etc. per collection. Default 300s
+  // (5 min). Heavier than poll/prune; don't crank it too low.
+  STATS_REFRESH_SECONDS: z
+    .string()
+    .default("300")
+    .transform((s) => parseInt(s, 10))
+    .refine((n) => n >= 30, "STATS_REFRESH_SECONDS must be >= 30"),
+  // Tier reclassification cadence. Reads from stats so should run after
+  // a stats refresh. Default 600s (10 min).
+  TIER_REFRESH_SECONDS: z
+    .string()
+    .default("600")
+    .transform((s) => parseInt(s, 10))
+    .refine((n) => n >= 60, "TIER_REFRESH_SECONDS must be >= 60"),
+  // Pruning cadence. Daily is sensible — pruning churns Postgres pages.
+  // Set to 24 (hours) for normal ops; lower for testing.
+  PRUNE_HOURS: z
+    .string()
+    .default("24")
+    .transform((s) => parseInt(s, 10))
+    .refine((n) => n >= 1, "PRUNE_HOURS must be >= 1"),
   MARKETPLACE_ADDRESS: z
     .string()
     .optional()
