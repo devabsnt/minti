@@ -62,7 +62,31 @@ body::before {
   mix-blend-mode: multiply;
 }
 
-/* Push every real page above the noise layer. */
+/* Watermark layer. Two repeating patterns multiplied together:
+   - bamboo-watermark.svg (scattered bamboo motifs, sepia)
+   - postmark-motif.png (tiny baoling silhouette, the same one used
+     on the postcard NFTs)
+   Both at very low opacity so they read as paper-watermark, not
+   surface decoration. The two have different tile sizes and offset
+   positions so the combined pattern feels irregular. */
+body::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  color: var(--color-foreground-secondary);
+  background-image:
+    url("/bamboo-watermark.svg"),
+    url("/postmark-motif.png");
+  background-repeat: repeat, repeat;
+  background-size: 360px 360px, 90px 90px;
+  background-position: 0 0, 140px 110px;
+  opacity: 0.07;
+  mix-blend-mode: multiply;
+}
+
+/* Push every real page above the watermark + noise layers. */
 body > * {
   position: relative;
   z-index: 1;
@@ -270,7 +294,41 @@ body > * {
   100% { background-position: 200% 50%; }
 }
 
-/* ── Corner bamboo ───────────────────────────────────────────────
+/* ── Side bamboo ─────────────────────────────────────────────────
+   Simple static bamboo on every non-landing page. One small clump
+   per side, mirrored on the right. No animation. Renders at the
+   bottom corners of the viewport. */
+.side-bamboo {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 5;
+}
+.side-bamboo-left,
+.side-bamboo-right {
+  position: absolute;
+  bottom: -1vh;
+  width: clamp(140px, 18vw, 240px);
+}
+.side-bamboo-left svg,
+.side-bamboo-right svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  filter:
+    drop-shadow(0 0 1px rgba(45, 36, 24, 0.30))
+    drop-shadow(3px 5px 0 rgba(45, 36, 24, 0.10))
+    drop-shadow(0 10px 16px rgba(45, 36, 24, 0.12));
+}
+.side-bamboo-left {
+  left: 0;
+}
+.side-bamboo-right {
+  right: 0;
+  transform: scaleX(-1);
+}
+
+/* ── Corner bamboo (landing parallax bushes) ─────────────────────
    Two bamboo clumps anchored to the bottom corners of the viewport.
    At rest they lean inward toward page center. As the user scrolls
    down, they translate outward and rotate further from center.
@@ -289,48 +347,55 @@ body > * {
   pointer-events: none;
   z-index: 5;
 }
-.corner-bamboo-left,
-.corner-bamboo-right {
+.corner-bamboo-side {
   position: absolute;
-  bottom: -2vh;
-  width: clamp(220px, 28vw, 420px);
-  /* Make the SVG fill the wrapper, the SVG's preserveAspectRatio
-     handles the rest. */
-}
-.corner-bamboo-left svg,
-.corner-bamboo-right svg {
-  display: block;
-  width: 100%;
-  height: auto;
-  /* Subtle paper-cutout drop shadow to lift the bamboo off the
-     cream paper background. */
-  filter:
-    drop-shadow(0 0 1px rgba(45, 36, 24, 0.35))
-    drop-shadow(4px 6px 0 rgba(45, 36, 24, 0.10))
-    drop-shadow(0 12px 18px rgba(45, 36, 24, 0.12));
+  bottom: 0;
+  width: 52vw;
+  max-width: 720px;
+  height: 90vh;
+  max-height: 900px;
 }
 .corner-bamboo-left {
   left: 0;
-  transform-origin: bottom left;
-  transform:
-    translateX(calc(var(--bamboo-progress, 0) * -28%))
-    rotate(calc(14deg - var(--bamboo-progress, 0) * 30deg));
 }
 .corner-bamboo-right {
   right: 0;
-  transform-origin: bottom right;
+  transform: scaleX(-1);
+}
+.bamboo-layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  transition: transform 60ms linear;
+  will-change: transform;
+}
+.bamboo-layer svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+.bamboo-back {
+  transform: translateX(calc(var(--bamboo-progress, 0) * -25%));
+  filter:
+    drop-shadow(0 0 1px rgba(45, 36, 24, 0.18))
+    drop-shadow(0 8px 14px rgba(45, 36, 24, 0.08));
+  opacity: 0.85;
+}
+.bamboo-front {
   transform:
-    translateX(calc(var(--bamboo-progress, 0) * 28%))
-    rotate(calc(-14deg + var(--bamboo-progress, 0) * 30deg))
-    scaleX(-1);
+    translateX(calc(var(--bamboo-progress, 0) * -55%))
+    rotate(calc(var(--bamboo-progress, 0) * -6deg));
+  transform-origin: bottom left;
+  filter:
+    drop-shadow(0 0 1px rgba(45, 36, 24, 0.35))
+    drop-shadow(4px 6px 0 rgba(45, 36, 24, 0.10))
+    drop-shadow(0 14px 22px rgba(45, 36, 24, 0.15));
 }
 @media (prefers-reduced-motion: reduce) {
-  .corner-bamboo-left,
-  .corner-bamboo-right {
+  .bamboo-back,
+  .bamboo-front {
+    transition: none;
     transform: none;
-  }
-  .corner-bamboo-right {
-    transform: scaleX(-1);
   }
 }
 

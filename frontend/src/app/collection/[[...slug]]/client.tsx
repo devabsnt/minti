@@ -146,6 +146,11 @@ function CollectionPage({
   };
   const closeTokenDetail = () => {
     setOpenTokenId(null);
+    // Close gets its own page-turn. Because the sound system rotates
+    // through five segments and refuses to play the same one twice
+    // in a row, this naturally lands on a different segment than the
+    // one that played on open.
+    playPageTurn();
     if (typeof window !== "undefined") {
       // Use back() if our pushState frame is the current entry,
       // otherwise replace, so we don't accumulate empty entries.
@@ -821,6 +826,28 @@ function TokenDetailPage({
   );
   const metadata = isEvmfs ? evmfsMetadata : legacyMetadata;
   const isLoading = isEvmfs ? !evmfsMetadata && !viewerUri : legacyLoading;
+
+  // CORS fallback. Some collections host their metadata JSON on a
+  // host that doesn't return Access-Control-Allow-Origin (scatter's
+  // instareveal API is the current offender). In that case the
+  // tokenURI fetch from `useNftMetadata` fails and we end up with no
+  // image. But the gallery card uses the indexer's imageUrlTemplate
+  // and renders an `<img>` directly, which doesn't trigger CORS at
+  // all - browsers don't enforce CORS on image loads for display.
+  // So we pull the same template here and synthesize an image URL
+  // as a fallback. The text fields (description, attributes) stay
+  // empty when metadata fetch fails; we can't recover those without
+  // a CORS-friendly endpoint.
+  const { data: indexerCollData } = useIndexerCollection(collectionAddress);
+  const imageUrlTemplate = indexerCollData?.collection?.imageUrlTemplate;
+  const sampleImageUrl = indexerCollData?.collection?.sampleImageUrl;
+  const synthesizedImage = useMemo(() => {
+    if (imageUrlTemplate) {
+      return imageUrlTemplate.replace(/\{id\}/g, tokenId);
+    }
+    return sampleImageUrl ?? "";
+  }, [imageUrlTemplate, sampleImageUrl, tokenId]);
+  const effectiveImage = metadata?.image || synthesizedImage;
   const { data: bids } = useCollectionBids(collectionAddress);
   const { data: offers } = useCollectionOffers(collectionAddress);
 
@@ -869,7 +896,7 @@ function TokenDetailPage({
             />
           ) : (
             <NftImage
-              src={metadata?.image || ""}
+              src={effectiveImage}
               rawUri={
                 isEvmfs ? undefined : (legacyMetadata as { rawImageUri?: string } | undefined)?.rawImageUri
               }

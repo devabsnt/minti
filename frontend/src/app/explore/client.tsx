@@ -734,25 +734,12 @@ function TrendingPodiumCard({
             </div>
           </div>
           <div className="flex-1 min-w-0 flex flex-col gap-1">
-            <div className="flex items-start justify-between gap-3">
-              <div className="min-w-0">
-                <div className="text-xl sm:text-2xl font-bold truncate">
-                  {name}
-                </div>
-                {symbol && (
-                  <div className="text-sm text-foreground-secondary truncate">
-                    {symbol}
-                  </div>
-                )}
+            <h3 className="text-xl sm:text-2xl font-bold truncate">{name}</h3>
+            {symbol && (
+              <div className="text-sm text-foreground-secondary truncate">
+                {symbol}
               </div>
-              <div
-                className="flex-shrink-0 flex flex-col items-end gap-1"
-                title="Activity in the last 24 hours"
-              >
-                <ActivitySparkline contractAddress={collection.address} />
-                <span className="text-xs text-foreground-secondary">24h</span>
-              </div>
-            </div>
+            )}
             <div className="flex flex-wrap items-center gap-x-5 gap-y-1 mt-3 text-sm">
               <span>
                 <span className="font-medium">
@@ -777,6 +764,24 @@ function TrendingPodiumCard({
                 </span>
               )}
               <FloorPrice contractAddress={collection.address} />
+            </div>
+            {/* 24h activity sparkline below the stats row. The chart
+                takes the full width of the info column on the podium
+                card, with a small "24h" label aligned right. */}
+            <div
+              className="mt-3 flex items-center gap-3"
+              title="Activity in the last 24 hours"
+            >
+              <div className="flex-1 min-w-0">
+                <ActivitySparkline
+                  contractAddress={collection.address}
+                  width={240}
+                  height={32}
+                />
+              </div>
+              <span className="text-[10px] uppercase tracking-widest text-foreground-secondary">
+                24h
+              </span>
             </div>
           </div>
         </div>

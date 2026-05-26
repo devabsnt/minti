@@ -37,9 +37,13 @@ export function Header() {
 
   return (
     <header className="sticky top-0 z-50 border-b border-border bg-background/85 backdrop-blur-md">
-      <div className="max-w-7xl mx-auto px-4 h-16 flex items-center justify-between gap-4">
+      {/* `relative` so the absolutely-positioned search bar centers
+          on the viewport regardless of how wide the left and right
+          groups end up. Flex justify-between on left/right keeps
+          their natural positions; the search overlays at center. */}
+      <div className="relative max-w-7xl mx-auto px-4 h-16 flex items-center justify-between gap-4">
         {/* Logo + Nav */}
-        <div className="flex items-center gap-10 flex-shrink-0">
+        <div className="relative z-10 flex items-center gap-10 flex-shrink-0">
           <Link
             href="/"
             className="text-base font-bold tracking-tight shrink-0"
@@ -61,13 +65,15 @@ export function Header() {
           </nav>
         </div>
 
-        {/* Search. Autocompletes by name from the snapshot. */}
-        <div className="hidden sm:flex flex-1 max-w-md mx-2 min-w-0">
+        {/* Search bar. Absolutely centered on the viewport so its
+            position is independent of the left/right group widths.
+            Hidden on mobile (room is too tight). */}
+        <div className="hidden sm:block absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-80 lg:w-96 max-w-[min(60vw,420px)]">
           <GlobalSearch />
         </div>
 
         {/* Right side */}
-        <div className="flex items-center gap-2 sm:gap-3 flex-shrink-0">
+        <div className="relative z-10 flex items-center gap-2 sm:gap-3 flex-shrink-0">
           <ConnectButton />
           <button
             type="button"

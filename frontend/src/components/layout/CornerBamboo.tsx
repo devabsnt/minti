@@ -3,29 +3,30 @@
 import { useEffect, useRef } from "react";
 
 /**
- * Corner bamboo decorations on the landing page.
+ * Corner bamboo decoration on the landing page.
  *
- * Two bamboo clumps anchored to the bottom-left and bottom-right
- * corners of the viewport. At rest they lean inward toward the page
- * center, like the entrance to a paper-craft theater set. As the
- * user scrolls down, they translate outward and rotate further from
- * center, parting like a curtain.
+ * Two dense bushes (left + right) each composed of two layers:
+ * - Back layer: smaller, lighter, more washed-out sage. Recedes
+ *   slowly on scroll.
+ * - Front layer: taller, brighter, fuller leaves. Recedes faster on
+ *   scroll, creating a parallax sense of depth.
  *
- * Visuals:
- * - Multi-stalk SVG clumps. Paper Mario style flat shading, two
- *   sage tones per stalk to suggest paper-cutout layering.
- * - A subtle `<feTurbulence>` displacement filter wobbles every
- *   edge so the cuts look hand-made rather than machine-precise.
- * - The right clump is the same SVG mirrored via `scaleX(-1)`.
+ * At rest the bushes mostly obscure the page. As the user scrolls
+ * down, the front layer slides outward by ~60% and the back layer
+ * by ~25%, until both are only peeking in from the page edges.
  *
- * Scroll mapping:
- * - Progress = scrollY / viewportHeight, clamped to [0, 1].
- * - At progress 0: rotate inward 14deg, no translate.
- * - At progress 1: rotate outward 16deg, translate 35% off-screen.
- * - Updated via a CSS custom property so the transform stays on
- *   the compositor (no React re-renders per scroll frame).
+ * The scroll transform is driven by a CSS custom property
+ * `--bamboo-progress` (0 -> 1) updated from `window.scrollY /
+ * window.innerHeight`. The variable is set on a ref-held DOM node,
+ * so React does not re-render every frame; the transform stays on
+ * the compositor.
  *
- * Pointer events: disabled on the wrapper so the bamboo never
+ * Right-side mirroring is done with `scaleX(-1)` on the side
+ * wrapper. The parallax translateX values on inner layers are
+ * negative on both sides; on the right that negative becomes
+ * positive in viewport coordinates because of the parent flip.
+ *
+ * Pointer events are disabled at the wrapper so the bamboo never
  * intercepts clicks on the hero content sitting above it.
  */
 export function CornerBamboo() {
@@ -52,7 +53,6 @@ export function CornerBamboo() {
       requestAnimationFrame(update);
     };
 
-    // Initial set so first paint isn't at 0 if the page loaded scrolled.
     update();
     window.addEventListener("scroll", onScroll, { passive: true });
     return () => window.removeEventListener("scroll", onScroll);
@@ -65,194 +65,235 @@ export function CornerBamboo() {
       aria-hidden
       style={{ ["--bamboo-progress" as string]: 0 }}
     >
-      <div className="corner-bamboo-left">
-        <BambooClump />
+      <div className="corner-bamboo-side corner-bamboo-left">
+        <div className="bamboo-layer bamboo-back">
+          <BambooBush variant="back" />
+        </div>
+        <div className="bamboo-layer bamboo-front">
+          <BambooBush variant="front" />
+        </div>
       </div>
-      <div className="corner-bamboo-right">
-        <BambooClump />
+      <div className="corner-bamboo-side corner-bamboo-right">
+        <div className="bamboo-layer bamboo-back">
+          <BambooBush variant="back" />
+        </div>
+        <div className="bamboo-layer bamboo-front">
+          <BambooBush variant="front" />
+        </div>
       </div>
     </div>
   );
 }
 
+interface StalkConfig {
+  /** Horizontal position of the stalk base (in viewBox units). */
+  x: number;
+  /** Y position of the top of the stalk (lower number = taller). */
+  topY: number;
+  /** Width of the stalk in viewBox units. */
+  thickness: number;
+  /** Degrees of lean. Positive leans right. */
+  lean: number;
+  /** Body color (front face). */
+  body: string;
+  /** Shadow color (back face / shaded side). */
+  shadow: string;
+  /** Highlight color (the thin bright strip on the front face). */
+  highlight: string;
+  /** Joint band color (the darker rings between segments). */
+  joint: string;
+  /** Rotation direction for the top leaf cluster (degrees). */
+  leafTilt: number;
+  /** Light-leaf and dark-leaf colors for the top cluster. */
+  leafLight: string;
+  leafDark: string;
+}
+
 /**
- * A single bamboo clump SVG. Three stalks at different heights and
- * lean angles, plus leaf clusters at the top of each. Flat sage
- * colors with one shadow tone per stalk to suggest the back face of
- * a paper cutout. Edges are wobbled by an SVG turbulence filter so
- * cuts read as hand-made.
- *
- * The viewBox is set wide enough that leaves can extend slightly
- * outside the central "stalks" column without being clipped.
+ * Render a single bamboo stalk with joints, highlight, and a top
+ * leaf cluster. Coordinates assume a 600x720 viewBox; positions are
+ * relative to the stalk base at the bottom.
  */
-function BambooClump() {
+function BambooStalk({ s, baseY = 720 }: { s: StalkConfig; baseY?: number }) {
+  const t = s.thickness;
+  const stalkHeight = baseY - s.topY;
+  // Joint positions, every ~70 units along the stalk height.
+  const joints: number[] = [];
+  for (let y = s.topY + 50; y < baseY - 30; y += 70) joints.push(y);
+  return (
+    <g
+      transform={`translate(${s.x} 0) rotate(${s.lean} 0 ${baseY})`}
+      style={{ transformOrigin: `0 ${baseY}px` }}
+    >
+      {/* Shadow / back face: identical silhouette, offset slightly */}
+      <path
+        d={`M ${1.5} ${baseY} L ${t + 1.5} ${baseY} L ${t + 1.5} ${s.topY} L ${1.5} ${s.topY} Z`}
+        fill={s.shadow}
+      />
+      {/* Front face */}
+      <path
+        d={`M 0 ${baseY} L ${t} ${baseY} L ${t} ${s.topY} L 0 ${s.topY} Z`}
+        fill={s.body}
+      />
+      {/* Highlight stripe (left edge, thin) */}
+      <path
+        d={`M 1 ${baseY - 4} L ${Math.max(2, t * 0.18)} ${baseY - 4} L ${Math.max(2, t * 0.18)} ${s.topY + 6} L 1 ${s.topY + 6} Z`}
+        fill={s.highlight}
+        opacity="0.55"
+      />
+      {/* Joint bands */}
+      {joints.map((y, i) => (
+        <path
+          key={`j${i}`}
+          d={`M -1 ${y} L ${t + 1} ${y} L ${t + 1} ${y + 5} L -1 ${y + 5} Z`}
+          fill={s.joint}
+        />
+      ))}
+      {/* Top leaf cluster: three lobes around the top of the stalk */}
+      <g
+        transform={`translate(${t / 2} ${s.topY}) rotate(${s.leafTilt})`}
+      >
+        <path
+          d="M 0 0 C -22 -10 -42 -28 -54 -50 C -38 -38 -18 -22 0 -6 Z"
+          fill={s.leafLight}
+        />
+        <path
+          d="M 0 0 C 22 -12 42 -32 52 -54 C 38 -38 16 -22 0 -8 Z"
+          fill={s.leafDark}
+        />
+        <path
+          d="M -4 -4 C -12 -32 -10 -58 -2 -76 C 2 -56 4 -30 -2 -8 Z"
+          fill={s.leafLight}
+          opacity="0.85"
+        />
+      </g>
+    </g>
+  );
+}
+
+/**
+ * One bush. The back variant has fewer, paler stalks with smaller
+ * leaf clusters. The front variant is the showpiece - taller stalks,
+ * fuller leaves, richer color. Same SVG viewBox so the two layers
+ * register with each other and stack into a single visual.
+ */
+function BambooBush({ variant }: { variant: "back" | "front" }) {
+  const stalks: StalkConfig[] = variant === "back"
+    ? [
+        // Back layer - washed sage, slightly tilted toward center.
+        {
+          x: 60, topY: 180, thickness: 22, lean: 6,
+          body: "#a3bea0", shadow: "#7a9778", highlight: "#c6dac4", joint: "#7a9778",
+          leafTilt: -4, leafLight: "#9bb898", leafDark: "#7a9778",
+        },
+        {
+          x: 130, topY: 230, thickness: 20, lean: 3,
+          body: "#a8c2a4", shadow: "#809d7d", highlight: "#c6dac4", joint: "#809d7d",
+          leafTilt: 8, leafLight: "#9bb898", leafDark: "#7a9778",
+        },
+        {
+          x: 210, topY: 160, thickness: 24, lean: 10,
+          body: "#a3bea0", shadow: "#7a9778", highlight: "#c6dac4", joint: "#7a9778",
+          leafTilt: 12, leafLight: "#9bb898", leafDark: "#7a9778",
+        },
+        {
+          x: 300, topY: 240, thickness: 19, lean: 4,
+          body: "#a8c2a4", shadow: "#809d7d", highlight: "#c6dac4", joint: "#809d7d",
+          leafTilt: -8, leafLight: "#9bb898", leafDark: "#7a9778",
+        },
+        {
+          x: 380, topY: 200, thickness: 22, lean: 8,
+          body: "#a3bea0", shadow: "#7a9778", highlight: "#c6dac4", joint: "#7a9778",
+          leafTilt: 6, leafLight: "#9bb898", leafDark: "#7a9778",
+        },
+        {
+          x: 460, topY: 260, thickness: 18, lean: 2,
+          body: "#a8c2a4", shadow: "#809d7d", highlight: "#c6dac4", joint: "#809d7d",
+          leafTilt: -12, leafLight: "#9bb898", leafDark: "#7a9778",
+        },
+      ]
+    : [
+        // Front layer - richer green, fuller, taller. The front
+        // stalks staircase from the inside-edge upward so the bush
+        // reads as "growing toward page center."
+        {
+          x: 30, topY: 130, thickness: 30, lean: 4,
+          body: "#7aa172", shadow: "#56755e", highlight: "#a5c79b", joint: "#56755e",
+          leafTilt: -6, leafLight: "#82a87b", leafDark: "#56755e",
+        },
+        {
+          x: 95, topY: 90, thickness: 32, lean: 8,
+          body: "#82a87b", shadow: "#5c7d57", highlight: "#a8c79f", joint: "#5c7d57",
+          leafTilt: -2, leafLight: "#82a87b", leafDark: "#5c7d57",
+        },
+        {
+          x: 175, topY: 60, thickness: 36, lean: 12,
+          body: "#7aa172", shadow: "#56755e", highlight: "#a5c79b", joint: "#56755e",
+          leafTilt: 6, leafLight: "#82a87b", leafDark: "#56755e",
+        },
+        {
+          x: 265, topY: 110, thickness: 30, lean: 5,
+          body: "#82a87b", shadow: "#5c7d57", highlight: "#a8c79f", joint: "#5c7d57",
+          leafTilt: 10, leafLight: "#82a87b", leafDark: "#5c7d57",
+        },
+        {
+          x: 345, topY: 80, thickness: 34, lean: 9,
+          body: "#7aa172", shadow: "#56755e", highlight: "#a5c79b", joint: "#56755e",
+          leafTilt: -10, leafLight: "#82a87b", leafDark: "#56755e",
+        },
+        {
+          x: 430, topY: 140, thickness: 28, lean: 6,
+          body: "#82a87b", shadow: "#5c7d57", highlight: "#a8c79f", joint: "#5c7d57",
+          leafTilt: 4, leafLight: "#82a87b", leafDark: "#5c7d57",
+        },
+        {
+          x: 510, topY: 180, thickness: 26, lean: 3,
+          body: "#7aa172", shadow: "#56755e", highlight: "#a5c79b", joint: "#56755e",
+          leafTilt: -6, leafLight: "#82a87b", leafDark: "#56755e",
+        },
+      ];
+
   return (
     <svg
-      viewBox="0 0 320 480"
+      viewBox="0 0 600 720"
       width="100%"
       height="100%"
-      preserveAspectRatio="xMidYEnd meet"
+      preserveAspectRatio="xMinYEnd meet"
       role="img"
-      aria-label="Bamboo decoration"
+      aria-label={`Bamboo (${variant})`}
     >
       <defs>
-        {/* Rough-cut edge filter: small turbulent displacement that
-            wobbles every stroke and fill boundary. Subtle enough that
-            shapes are still recognizable, strong enough to break the
-            "vector perfection" look. */}
-        <filter id="bamboo-rough" x="-5%" y="-5%" width="110%" height="110%">
+        {/* Edge displacement filter - wobbles every outline so the
+            cuts read as hand-made paper rather than vector-perfect.
+            Stronger seed/freq on the front layer for visual contrast. */}
+        <filter
+          id={`bamboo-rough-${variant}`}
+          x="-5%"
+          y="-5%"
+          width="110%"
+          height="110%"
+        >
           <feTurbulence
             type="fractalNoise"
-            baseFrequency="0.022"
+            baseFrequency={variant === "front" ? "0.024" : "0.018"}
             numOctaves="2"
-            seed="3"
+            seed={variant === "front" ? "7" : "3"}
             result="noise"
           />
           <feDisplacementMap
             in="SourceGraphic"
             in2="noise"
-            scale="2.4"
+            scale={variant === "front" ? "3" : "2"}
             xChannelSelector="R"
             yChannelSelector="G"
           />
         </filter>
       </defs>
 
-      <g filter="url(#bamboo-rough)">
-        {/* ─── Back stalk (tallest, slight right lean) ───────────── */}
-        <g transform="translate(150 0)">
-          {/* Back-face shadow (offset darker copy) */}
-          <path
-            d="M 12 460 C 14 360 18 230 22 60 L 38 60 C 34 230 30 360 28 460 Z"
-            fill="#5c7d57"
-          />
-          {/* Front face */}
-          <path
-            d="M 8 460 C 10 360 14 230 18 60 L 34 60 C 30 230 26 360 24 460 Z"
-            fill="#82a87b"
-          />
-          {/* Joint bands */}
-          <path
-            d="M 9 360 C 14 358 22 358 34 360 L 33 366 C 22 364 14 364 10 366 Z"
-            fill="#5c7d57"
-          />
-          <path
-            d="M 11 250 C 16 248 23 248 32 250 L 31 256 C 23 254 17 254 12 256 Z"
-            fill="#5c7d57"
-          />
-          <path
-            d="M 14 140 C 18 138 24 138 30 140 L 29 146 C 23 144 19 144 15 146 Z"
-            fill="#5c7d57"
-          />
-          {/* Highlight stripe */}
-          <path
-            d="M 10 460 C 12 360 16 220 20 70 L 23 70 C 19 220 15 360 13 460 Z"
-            fill="#a8c79f"
-            opacity="0.55"
-          />
-          {/* Top leaf cluster */}
-          <g transform="translate(20 60) rotate(-6)">
-            <path
-              d="M 0 0 C -22 -14 -42 -32 -52 -52 C -34 -42 -14 -28 0 -8 Z"
-              fill="#6b9874"
-            />
-            <path
-              d="M 0 0 C 22 -16 42 -36 50 -58 C 36 -46 16 -30 0 -10 Z"
-              fill="#82a87b"
-            />
-            <path
-              d="M -6 -6 C -16 -34 -16 -60 -8 -78 C -4 -58 -2 -34 -4 -10 Z"
-              fill="#5c7d57"
-            />
-          </g>
-        </g>
-
-        {/* ─── Middle stalk (medium, more vertical) ─────────────── */}
-        <g transform="translate(95 0)">
-          <path
-            d="M 14 460 C 16 380 18 280 22 160 L 36 160 C 32 280 28 380 26 460 Z"
-            fill="#5c7d57"
-          />
-          <path
-            d="M 10 460 C 12 380 14 280 18 160 L 32 160 C 28 280 24 380 22 460 Z"
-            fill="#7ea478"
-          />
-          <path
-            d="M 11 380 C 15 378 22 378 31 380 L 30 386 C 22 384 16 384 12 386 Z"
-            fill="#5c7d57"
-          />
-          <path
-            d="M 14 280 C 17 278 23 278 30 280 L 29 286 C 23 284 18 284 15 286 Z"
-            fill="#5c7d57"
-          />
-          <path
-            d="M 12 460 C 14 380 16 280 20 170 L 23 170 C 19 280 17 380 15 460 Z"
-            fill="#a8c79f"
-            opacity="0.5"
-          />
-          {/* Leaf cluster at top */}
-          <g transform="translate(20 160) rotate(8)">
-            <path
-              d="M 0 0 C -18 -10 -34 -24 -42 -42 C -28 -34 -12 -22 0 -6 Z"
-              fill="#82a87b"
-            />
-            <path
-              d="M 0 0 C 16 -14 30 -28 36 -46 C 26 -34 12 -22 0 -8 Z"
-              fill="#6b9874"
-            />
-          </g>
-        </g>
-
-        {/* ─── Front stalk (shortest, slight left lean) ─────────── */}
-        <g transform="translate(40 0)">
-          <path
-            d="M 18 460 C 16 400 14 320 12 240 L 28 240 C 28 320 28 400 30 460 Z"
-            fill="#5c7d57"
-          />
-          <path
-            d="M 14 460 C 12 400 10 320 8 240 L 24 240 C 24 320 24 400 26 460 Z"
-            fill="#7aa172"
-          />
-          <path
-            d="M 9 400 C 13 398 19 398 26 400 L 25 406 C 19 404 14 404 10 406 Z"
-            fill="#5c7d57"
-          />
-          <path
-            d="M 8 320 C 12 318 18 318 25 320 L 24 326 C 18 324 13 324 9 326 Z"
-            fill="#5c7d57"
-          />
-          <path
-            d="M 11 460 C 9 400 7 320 5 245 L 8 245 C 10 320 12 400 14 460 Z"
-            fill="#a8c79f"
-            opacity="0.45"
-          />
-          {/* Leaves at top */}
-          <g transform="translate(16 240) rotate(-12)">
-            <path
-              d="M 0 0 C -16 -8 -28 -22 -34 -38 C -22 -28 -8 -16 0 -4 Z"
-              fill="#7aa172"
-            />
-            <path
-              d="M 0 0 C 14 -10 26 -22 30 -38 C 22 -28 10 -16 0 -6 Z"
-              fill="#6b9874"
-            />
-          </g>
-        </g>
-
-        {/* ─── Ground tuft: short grass-like sprouts at the base ── */}
-        <g transform="translate(60 460)">
-          <path
-            d="M 0 0 C 4 -18 6 -28 4 -40 C 12 -32 12 -16 8 0 Z"
-            fill="#6b9874"
-          />
-        </g>
-        <g transform="translate(210 460)">
-          <path
-            d="M 0 0 C -4 -20 -2 -30 -10 -42 C -16 -28 -14 -14 -8 0 Z"
-            fill="#82a87b"
-          />
-        </g>
-
+      <g filter={`url(#bamboo-rough-${variant})`}>
+        {stalks.map((s, i) => (
+          <BambooStalk key={i} s={s} />
+        ))}
       </g>
     </svg>
   );
