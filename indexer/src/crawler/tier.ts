@@ -26,7 +26,7 @@ const SPAM_NAME_RE =
 
 // Patterns suggesting DeFi infrastructure NFTs rather than collectibles.
 const DEFI_INFRA_NAME_RE =
-  /uniswap|sushiswap|pancakeswap|\bpancake\b|\bpcs\b|aave|compound|maker\b|curve\b|balancer|pendle|gmx|kuru|crocswap|monadex|nadfun|nostra|izumi|kintsu|magma|amphor|stork|pyth|clob|orderbook|velodrome|aerodrome|camelot|quickswap|trader\s*joe|algebra|slipstream|steer\b|clmm|\bperp\b|\bswap\b|\bexchange\b|\brouter\b|lp\b|liquidity\s+position|\bv\d\s*positions?\b|\bpositions?\s+nft\b|\bposition\s*(nft|v\d|manager|token)\b|\bvault\b|\bstake\b|staking\b|lending\b|yield\b|\bdebt\b|atoken|name\s+service|registrar\b|\bdomain\b|\bname\s+manager\b|\bsbt\b|soulbound|\bpoap\b|attestation|\bcertificate\b|\bbadge\b/i;
+  /uniswap|sushiswap|pancakeswap|\bpancake\b|\bpcs\b|aave|compound|maker\b|curve\b|balancer|pendle|gmx|kuru|crocswap|monadex|nadfun|nostra|izumi|kintsu|magma|amphor|stork|pyth|clob|orderbook|velodrome|aerodrome|camelot|quickswap|trader\s*joe|algebra|slipstream|steer\b|clmm|\bperp\b|\bswap\b|\bexchange\b|\brouter\b|lp\b|liquidity\s+position|\bv\d\s*positions?\b|\bpositions?\s+nft\b|\bposition\s*(nft|v\d|manager|token)\b|\bvault\b|\bstake\b|staking\b|lending\b|yield\b|\bdebt\b|atoken|name\s+service|registrar\b|\bdomain\b|\bname\s+manager\b|\bsbt\b|soulbound|\bpoap\b|attestation|\bcertificate\b|\bbadge\b|voting\s*escrow|\bescrow\b|\bve[A-Z][a-zA-Z]*\b|governance/i;
 
 function classifyName(name: string | null, symbol: string | null): "spam" | "defi" | "ok" {
   if (name && SPAM_NAME_RE.test(name)) return "spam";
