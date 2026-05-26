@@ -27,11 +27,17 @@ import { OnChainVerifyPanel } from "@/components/collection/OnChainVerifyPanel";
 import { CollectionWarnings } from "@/components/collection/CollectionWarnings";
 import { HideCollectionButton } from "@/components/collection/HideCollectionButton";
 import { CopyButton } from "@/components/ui/CopyButton";
+import { type TraitSelection } from "@/components/collection/TraitFilter";
 import {
-  TraitFilter,
-  filterIdsBySelection,
-  type TraitSelection,
-} from "@/components/collection/TraitFilter";
+  EnumeratedTraitFilter,
+  filterIdsByEnumeration,
+} from "@/components/collection/EnumeratedTraitFilter";
+import {
+  useTraitEnumeration,
+  type EnumerationState,
+} from "@/hooks/useTraitEnumeration";
+import type { TokenAttribute } from "@/lib/traitsCache";
+import type { IndexManifest } from "@/hooks/useIndexManifest";
 import { evmfsLabel, type EvmfsContract } from "@/lib/evmfs";
 import { Spinner } from "@/components/ui/Spinner";
 import { Button } from "@/components/ui/Button";
@@ -232,9 +238,37 @@ function CollectionPage({
     (n, s) => n + s.size,
     0,
   );
-  const filteredIds = indexManifest && activeFilterCount > 0
-    ? filterIdsBySelection(indexManifest, traitSelection)
-    : null;
+
+  // Trait data sources. Two paths:
+  //   - EVMFS collections expose `indexManifest` with all attributes
+  //     on-chain. We adapt that to the same shape the topbar filter
+  //     uses, so the UI renders identically. No enumeration needed.
+  //   - Everything else uses `useTraitEnumeration`, which walks
+  //     tokenURIs via Multicall3 + parallel JSON fetches and caches
+  //     to IndexedDB. The filter UI shows a "Fetching... N%"
+  //     indicator while it runs.
+  // Token ID start defaults to 1 (most contracts). Edge-case
+  // 0-indexed contracts may miss token 0 in enumeration, the filter
+  // still works for everything else.
+  const indexerTotalSupplyForTraits = indexerCollection?.totalSupply
+    ? Number(indexerCollection.totalSupply)
+    : 0;
+  const enumeratedState = useTraitEnumeration(
+    collectionAddress,
+    indexerTotalSupplyForTraits || undefined,
+    1,
+    !indexManifest && indexerTotalSupplyForTraits > 0,
+  );
+  const evmfsState = useMemo<EnumerationState | null>(
+    () => (indexManifest ? manifestToEnumerationState(indexManifest) : null),
+    [indexManifest],
+  );
+  const traitState: EnumerationState = evmfsState ?? enumeratedState;
+
+  const filteredIds = useMemo(() => {
+    if (activeFilterCount === 0) return null;
+    return filterIdsByEnumeration(traitState, traitSelection);
+  }, [activeFilterCount, traitState, traitSelection]);
 
   const filterPageSize = 24;
   const filteredPageIds =
@@ -514,6 +548,21 @@ function CollectionPage({
         </div>
       )}
 
+      {/* Trait filter topbar. Sits between the collection meta strip
+          and Your Items / Browse. Renders nothing for collections
+          where there's nothing useful to filter by. While the
+          client-side enumeration is running, the filter dropdowns
+          are visible but greyed out, and a "Fetching trait data..."
+          progress pill indicates work in progress. */}
+      <EnumeratedTraitFilter
+        state={traitState}
+        selected={traitSelection}
+        onChange={(next) => {
+          setTraitSelection(next);
+          setBrowsePage(0);
+        }}
+      />
+
       {/* Your Items — gated on `mounted` so SSR markup matches client
           (wagmi's `address` is undefined server-side, populated after
           hydration, which would otherwise mismatch). */}
@@ -575,17 +624,7 @@ function CollectionPage({
 
       {/* Browse All tab */}
       {tab === "browse" && (
-        <div className="flex flex-col md:flex-row gap-6">
-          {indexManifest && (
-            <TraitFilter
-              manifest={indexManifest}
-              selected={traitSelection}
-              onChange={(next) => {
-                setTraitSelection(next);
-                setBrowsePage(0);
-              }}
-            />
-          )}
+        <div className="flex flex-col">
           <div className="flex-1 min-w-0">
             {filteredIds !== null && (
               <div className="mb-4 text-xs text-foreground-secondary">
@@ -1238,4 +1277,45 @@ function ListingCardWithMetadata({
       onClick={onClick}
     />
   );
+}
+
+/**
+ * Adapt an EVMFS `IndexManifest` into the same `EnumerationState`
+ * shape produced by `useTraitEnumeration`. Lets a single topbar
+ * filter component work for both data sources without branching.
+ *
+ * Rarity score/rank are left empty for EVMFS - they'd be cheap to
+ * compute over the manifest entries but we don't surface rarity in
+ * the UI yet, so skip the work.
+ */
+function manifestToEnumerationState(manifest: IndexManifest): EnumerationState {
+  const traitTypes = manifest.traitTypes ?? [];
+  const traitCounts: Record<string, Record<string, number>> = {};
+  const tokenAttributes: Record<string, TokenAttribute[]> = {};
+  for (const traitType of traitTypes) {
+    traitCounts[traitType] = {};
+  }
+  for (const entry of manifest.traits) {
+    const tokenIdStr = String(entry.id);
+    const attrs: TokenAttribute[] = [];
+    for (let i = 0; i < traitTypes.length; i++) {
+      const value = entry.t[i];
+      if (!value) continue;
+      const traitType = traitTypes[i];
+      attrs.push({ trait_type: traitType, value });
+      traitCounts[traitType][value] =
+        (traitCounts[traitType][value] ?? 0) + 1;
+    }
+    tokenAttributes[tokenIdStr] = attrs;
+  }
+  return {
+    status: "complete",
+    progress: 1,
+    enumeratedCount: manifest.traits.length,
+    totalSupply: manifest.traits.length,
+    traitCounts,
+    tokenAttributes,
+    rarityScores: {},
+    rarityRanks: {},
+  };
 }

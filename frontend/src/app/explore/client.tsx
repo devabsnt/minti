@@ -51,12 +51,11 @@ import {
 export function ExploreClient() {
   const router = useRouter();
   const [search, setSearch] = useState("");
-  // Default: include long-tail (tier 1) so smaller / newer collections
-  // surface alongside the explore-eligible (tier 2) ones. The user can
-  // toggle to "Established only" to filter back to tier 2 if they want
-  // a stricter view.
-  const [showAll, setShowAll] = useState(true);
   const [sortKey, setSortKey] = useState<SortKey>("trending");
+  // Long-tail (tier 1) is always included now. We re-sort client-side
+  // with a refined trending score that factors holder concentration
+  // from the static snapshot, which the indexer can't see.
+  const showAll = true;
   const [longTailPage, setLongTailPage] = useState(0);
   const { browseChainId } = useBrowseChain();
   const { isHidden } = useHiddenCollections(browseChainId);
@@ -114,6 +113,15 @@ export function ExploreClient() {
         }
         return true;
       })
+      // Re-sort by the refined client-side score so EVMFS collections
+      // get their multiplier and any borderline whales still surface
+      // in the right order.
+      .map((c) => ({
+        c,
+        score: refinedTrendingScore(c, snapshotByAddress.get(c.address.toLowerCase())),
+      }))
+      .sort((a, b) => b.score - a.score)
+      .map((x) => x.c)
       .slice(0, 10);
   }, [trendingData, isHidden, snapshotByAddress]);
 
@@ -180,8 +188,25 @@ export function ExploreClient() {
     });
   const longTail = useMemo(() => {
     const rows = longTailData?.collections ?? [];
-    return rows.filter((c) => !isHidden(c.address));
-  }, [longTailData, isHidden]);
+    const visible = rows.filter((c) => !isHidden(c.address));
+    // When the indexer's sort is "trending", re-score client-side
+    // with the snapshot-aware refined score so whale-heavy
+    // collections like Mon-sters drop. Other sort keys (newest,
+    // name, holders) are left in the order the indexer returned.
+    if (sortKey === "trending") {
+      return visible
+        .map((c) => ({
+          c,
+          score: refinedTrendingScore(
+            c,
+            snapshotByAddress.get(c.address.toLowerCase()),
+          ),
+        }))
+        .sort((a, b) => b.score - a.score)
+        .map((x) => x.c);
+    }
+    return visible;
+  }, [longTailData, isHidden, sortKey, snapshotByAddress]);
   const longTailTotal = longTailData?.pagination.total ?? 0;
   const longTailTotalPages = Math.ceil(longTailTotal / LONG_TAIL_PAGE_SIZE);
 
@@ -299,20 +324,6 @@ export function ExploreClient() {
                   </p>
                 )}
               </div>
-              <label className="text-sm text-foreground-secondary flex items-center gap-2 cursor-pointer select-none">
-                <input
-                  type="checkbox"
-                  checked={!showAll}
-                  onChange={(e) => {
-                    // Checkbox represents "established only" - when
-                    // ticked, we filter to tier 2 (drops the long-tail).
-                    setShowAll(!e.target.checked);
-                    setLongTailPage(0);
-                  }}
-                  className="accent-mint"
-                />
-                Established only
-              </label>
             </div>
 
             {/* Sort chips */}
@@ -469,23 +480,12 @@ function FeaturedCard({ entry }: { entry: FeaturedCollectionEntry }) {
         <div className="absolute inset-0 bg-background-secondary/55" />
         <div className="absolute inset-0 bg-gradient-to-r from-background-secondary via-background-secondary/70 to-background-secondary/30" />
 
-        {/* Featured pill + minti approval postmark in the top-right.
-            The postmark is a clean SVG (no aging / erosion); reads
-            "MINTI.ART / APPROVED" curved around the rings, with the
-            dumpling silhouette in the center. */}
+        {/* Featured pill in the top-right corner of the card. */}
         <div
-          className="absolute top-3 right-4 flex items-center gap-2 z-10 pointer-events-none"
+          className="absolute top-3 right-4 z-10 pointer-events-none"
           aria-hidden
         >
           <span className="stamp-pill">Featured</span>
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img
-            src="/postmark-minti.svg"
-            alt=""
-            className="w-20 h-20"
-            style={{ transform: "rotate(-8deg)" }}
-            loading="lazy"
-          />
         </div>
 
         <div className="relative z-10 flex gap-4 p-4 items-start">
@@ -620,6 +620,73 @@ function LongTailCard({ collection }: { collection: ApiCollection }) {
  * sample of the collection. Falls back to the single sample image when
  * we don't have a template or supply.
  */
+/**
+ * Refined trending score, computed client-side. Mirrors the
+ * indexer's SQL trending formula but adds two signals the server
+ * can't see:
+ *
+ *   - **Holder concentration penalty** from the static snapshot.
+ *     The indexer's 30-day retention window can't see long-dormant
+ *     whales; the snapshot does a full-history scan and has
+ *     accurate `top1` / `top10` holder percentages. Whale-heavy
+ *     collections (Mon-sters etc.) get hammered.
+ *   - **EVMFS multiplier**. Fully on-chain collections (detected
+ *     via the indexer's `isOnChainMetadata` flag) get a 1.5x boost.
+ *     Treats every collection equally on the underlying activity
+ *     signals, but tilts the ranking toward EVMFS when the rest
+ *     is similar.
+ *
+ * Other factors match the indexer SQL:
+ *   - LN-scaled activity sum (secondary transfers + unique senders +
+ *     unique holders + mint diversity).
+ *   - Sender-diversity factor (caps single-seller collections).
+ *   - Mint-heavy additive penalty.
+ */
+function refinedTrendingScore(
+  c: ApiCollection,
+  snap: IndexedCollection | undefined,
+): number {
+  const transferCount = c.transferCount ?? 0;
+  const mintCount = c.mintCount ?? 0;
+  const uniqueSenders = c.uniqueSenders ?? 0;
+  const uniqueHolders = c.uniqueHolders ?? 0;
+  const uniqueMinters = c.uniqueMinters ?? 0;
+
+  const secondaryTransfers = Math.max(0, transferCount - mintCount);
+  const activity =
+    Math.log(1 + secondaryTransfers) * 2.0 +
+    Math.log(1 + uniqueSenders) * 2.5 +
+    Math.log(1 + uniqueHolders) * 1.0 +
+    Math.log(1 + mintCount) * 1.5 *
+      (uniqueMinters / Math.max(1, mintCount));
+
+  const senderFactor = Math.min(1, uniqueSenders / 30);
+
+  let concentrationFactor = 1;
+  if (snap) {
+    if (typeof snap.top1HolderPct === "number") {
+      concentrationFactor *= Math.max(0.05, 1 - 2 * snap.top1HolderPct);
+    }
+    if (typeof snap.top10HolderPct === "number") {
+      concentrationFactor *= Math.max(0.1, 1 - snap.top10HolderPct);
+    }
+  }
+
+  let mintPenalty = 0;
+  if (transferCount > 0) {
+    const mintRatio = mintCount / transferCount;
+    if (mintRatio > 0.85) mintPenalty = 5;
+    else if (mintRatio > 0.65) mintPenalty = 2;
+  }
+
+  const evmfsMultiplier = c.isOnChainMetadata ? 1.5 : 1.0;
+
+  return (
+    activity * senderFactor * concentrationFactor * evmfsMultiplier -
+    mintPenalty
+  );
+}
+
 function buildCollageImages(
   collection: ApiCollection,
   count: number,

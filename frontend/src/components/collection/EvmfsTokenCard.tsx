@@ -92,11 +92,13 @@ export function EvmfsTokenCard({
           ) : (
             <span className="text-xs text-foreground-secondary">Not listed</span>
           )}
-          {seller && (
-            <span className="text-xs text-foreground-secondary truncate">
-              {truncateAddress(seller)}
-            </span>
-          )}
+          {seller &&
+            seller.toLowerCase() !==
+              "0x0000000000000000000000000000000000000000" && (
+              <span className="text-xs text-foreground-secondary truncate">
+                {truncateAddress(seller)}
+              </span>
+            )}
         </div>
       </div>
     </Link>
