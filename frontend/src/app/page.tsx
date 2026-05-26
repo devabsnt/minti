@@ -3,12 +3,12 @@
 import Link from "next/link";
 import Image from "next/image";
 import { Button } from "@/components/ui/Button";
-import { BambooCurtain } from "@/components/layout/BambooCurtain";
+import { CornerBamboo } from "@/components/layout/CornerBamboo";
 
 export default function HomePage() {
   return (
     <div className="max-w-7xl mx-auto px-4">
-      <BambooCurtain />
+      <CornerBamboo />
       {/* Hero. Title and tagline use the serif family so they ladder
           cleanly with the Nº rank numerals used elsewhere. The cream
           paper backdrop + serif headline reads as "editorial album"

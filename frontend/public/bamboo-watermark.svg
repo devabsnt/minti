@@ -1,0 +1,111 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Bamboo watermark tile (300x300).
+
+  Used as a repeating background-image on the body to add a subtle
+  bamboo motif to the cream-paper surface. Designed so that motifs
+  sit at least 30px from each edge of the tile - when the pattern
+  repeats, the edge transitions read as random spacing rather than
+  visible seams. Each motif is composed of:
+
+    - Stalks: short vertical segments with hairline node lines
+    - Leaves: filled lozenge shapes with a thin stem connector
+
+  Stroke / fill colors use `currentColor` so the consumer (CSS) can
+  recolor the entire watermark by setting `color` on the element.
+
+  To edit:
+    - Adjust opacity at the <g> level
+    - Tweak transforms to rotate/scale individual clusters
+    - Each cluster is grouped under a `<g transform="translate(...)
+      rotate(...)">` for easy repositioning
+-->
+<svg
+  xmlns="http://www.w3.org/2000/svg"
+  width="300"
+  height="300"
+  viewBox="0 0 300 300"
+  fill="none"
+>
+  <g stroke="currentColor" stroke-width="1.1" stroke-linecap="round">
+
+    <!-- Cluster A: top-left, three leaves on a thin stem, leaning right -->
+    <g transform="translate(55 60) rotate(-18)">
+      <path d="M 0 0 L 0 38" />
+      <!-- Leaf 1 (top, to the right) -->
+      <path
+        d="M 0 4 C 6 -1 14 -4 22 -7 C 18 1 10 6 0 6 Z"
+        fill="currentColor"
+        stroke="none"
+      />
+      <!-- Leaf 2 (middle, to the left) -->
+      <path
+        d="M 0 16 C -7 12 -16 9 -24 7 C -18 14 -10 18 0 18 Z"
+        fill="currentColor"
+        stroke="none"
+      />
+      <!-- Leaf 3 (bottom, right) -->
+      <path
+        d="M 0 28 C 8 25 16 22 23 17 C 19 26 11 30 0 30 Z"
+        fill="currentColor"
+        stroke="none"
+      />
+    </g>
+
+    <!-- Stalk segment: middle-right, a length of bamboo with three nodes -->
+    <g transform="translate(225 130)">
+      <line x1="0" y1="-40" x2="0" y2="40" stroke-width="1.8" />
+      <!-- Node thickenings: short horizontal hatch lines at each joint -->
+      <line x1="-4" y1="-22" x2="4" y2="-22" stroke-width="1.6" />
+      <line x1="-4" y1="-2" x2="4" y2="-2" stroke-width="1.6" />
+      <line x1="-4" y1="18" x2="4" y2="18" stroke-width="1.6" />
+      <!-- One leaf budding off the side -->
+      <path
+        d="M 2 -10 C 10 -12 18 -16 24 -22 C 18 -14 10 -10 2 -8 Z"
+        fill="currentColor"
+        stroke="none"
+      />
+    </g>
+
+    <!-- Cluster B: bottom-center, two leaves crossing, leaning left -->
+    <g transform="translate(140 235) rotate(22)">
+      <path d="M 0 0 L 0 26" />
+      <path
+        d="M 0 6 C -8 2 -18 0 -26 -2 C -20 8 -10 12 0 10 Z"
+        fill="currentColor"
+        stroke="none"
+      />
+      <path
+        d="M 0 20 C 7 16 16 13 22 8 C 17 18 9 22 0 22 Z"
+        fill="currentColor"
+        stroke="none"
+      />
+    </g>
+
+    <!-- Lone leaf: lower-left, single small leaf for irregular density -->
+    <g transform="translate(60 230) rotate(-40)">
+      <path
+        d="M 0 0 C 6 -2 12 -4 18 -8 C 14 0 8 4 0 4 Z"
+        fill="currentColor"
+        stroke="none"
+      />
+      <line x1="0" y1="2" x2="-6" y2="8" stroke-width="0.9" />
+    </g>
+
+    <!-- Tiny twig: upper-right, two small leaves -->
+    <g transform="translate(255 50) rotate(35)">
+      <path d="M 0 0 L 0 14" stroke-width="0.9" />
+      <path
+        d="M 0 3 C 4 1 9 -2 13 -4 C 9 2 5 5 0 5 Z"
+        fill="currentColor"
+        stroke="none"
+      />
+      <path
+        d="M 0 11 C -4 8 -9 6 -12 4 C -8 10 -4 12 0 13 Z"
+        fill="currentColor"
+        stroke="none"
+      />
+    </g>
+
+  </g>
+</svg>

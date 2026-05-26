@@ -239,7 +239,12 @@ collectionsRoutes.get("/:address/sparkline", async (c) => {
   // hours appear as zeros (a LEFT JOIN against the activity aggregation
   // takes care of the actual values). All buckets are aligned to
   // hour boundaries via date_trunc.
-  const rows = await rawSql.unsafe<{ ts: Date; count: number }[]>(`
+  // `rawSql.unsafe` returns whatever the driver gave us - for
+  // generate_series timestamps that's a string, not a Date object.
+  // The generic type hint here is just a TypeScript convenience;
+  // it doesn't coerce. We normalize with `new Date(...)` which
+  // works for either string or Date inputs.
+  const rows = await rawSql.unsafe<{ ts: string | Date; count: number }[]>(`
     WITH buckets AS (
       SELECT generate_series(
         date_trunc('hour', NOW()) - (($1::int - 1) * INTERVAL '1 hour'),
@@ -263,6 +268,9 @@ collectionsRoutes.get("/:address/sparkline", async (c) => {
   `, [hours, address]);
 
   return c.json({
-    buckets: rows.map((r) => ({ ts: r.ts.toISOString(), count: r.count })),
+    buckets: rows.map((r) => ({
+      ts: new Date(r.ts).toISOString(),
+      count: r.count,
+    })),
   });
 });
