@@ -17,14 +17,19 @@ export function Button({
   ...props
 }: ButtonProps) {
   const baseClasses =
-    "font-medium transition-colors inline-flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed whitespace-nowrap";
+    "font-semibold inline-flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed whitespace-nowrap";
 
+  // Primary + secondary use the .stamp-button utilities defined in
+  // globals.css for the postcard "postage stamp" look (double-frame
+  // inset, slight rotation, ink-press shadow). Danger uses a plain
+  // bordered look so it doesn't compete with the vermillion accent.
   const variantClasses = {
-    primary: "bg-mint text-background hover:bg-mint-dim",
-    secondary:
-      "border border-border text-foreground hover:border-border-hover hover:bg-background-secondary",
-    ghost: "text-foreground-secondary hover:text-foreground hover:bg-background-secondary",
-    danger: "border border-danger/30 text-danger hover:bg-danger/10",
+    primary: "stamp-button",
+    secondary: "stamp-button-secondary",
+    ghost:
+      "text-foreground-secondary hover:text-foreground hover:bg-background-secondary transition-colors",
+    danger:
+      "border border-danger/40 text-danger hover:bg-danger/10 transition-colors",
   };
 
   const sizeClasses = {

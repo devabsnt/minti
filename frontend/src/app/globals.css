@@ -2,10 +2,10 @@
 
 @theme inline {
   /* ── Postcard palette ────────────────────────────────────────────
-     Warm cream paper background, sepia ink, sage green accent
-     (replacing the cold mint), postal-stamp red, mustard warning.
-     Designed to read like a printed postcard album rather than a
-     tech demo. */
+     Warm cream paper background, sepia ink, two accent colors:
+     vermillion (postal-stamp red) as the primary, gold leaf as the
+     secondary. Designed to read like a printed postcard album rather
+     than a tech demo. */
   --color-background: #f1e6cf;            /* warm cream paper */
   --color-background-secondary: #e6dab9;  /* card paper (slightly darker) */
   --color-background-tertiary: #d8c9a8;   /* deeper paper / placeholders */
@@ -13,20 +13,26 @@
   --color-foreground: #2d2418;            /* deep brown ink */
   --color-foreground-secondary: #6b5d40;  /* sepia */
 
-  /* Accent green: kept under the `mint` token name so existing
-     `text-mint` / `border-mint/X` utilities continue working. The
-     hue shifted from pure mint to a softer pastel sage that matches
-     the dumpling artwork. */
-  --color-mint: #6b9874;
-  --color-mint-dim: #557e5d;
-  --color-mint-dark: #3a5a44;
-  --color-mint-glow: rgba(107, 152, 116, 0.18);
+  /* Primary accent: vermillion red. The `mint` token name is kept
+     for backwards compatibility with every `text-mint` / `bg-mint`
+     / `border-mint/X` utility scattered through the codebase. The
+     hue is now postage-stamp red, not green. */
+  --color-mint: #c53a2c;             /* vermillion */
+  --color-mint-dim: #a82e22;
+  --color-mint-dark: #7a1f15;
+  --color-mint-glow: rgba(197, 58, 44, 0.18);
 
-  --color-border: #c2a572;          /* faded sepia paper edge */
+  /* Secondary accent: gold leaf. Used for premium / rank / verified
+     polish details (podium gold tier already uses similar tones). */
+  --color-gold: #b8862e;
+  --color-gold-dim: #8c651f;
+  --color-gold-light: #e2b659;
+
+  --color-border: #c2a572;           /* faded sepia paper edge */
   --color-border-hover: #a88a52;
 
-  --color-danger: #b8423a;          /* postal stamp red */
-  --color-warning: #c8893e;         /* mustard */
+  --color-danger: #9c2418;           /* deep red, distinct from accent */
+  --color-warning: #c8893e;          /* mustard */
 
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
@@ -203,17 +209,17 @@ body > * {
 }
 
 /* ── Featured card border ─────────────────────────────────────────
-   Subtle sage "breathing" effect. Tuned to the new pastel palette
-   (107/152/116 RGB = sage mint). Less loud than the podium's
-   metallic shimmer; just a soft pulse that says "platform-picked." */
+   Subtle vermillion "breathing" effect. Tuned to the new accent
+   color. Less loud than the podium's metallic shimmer; just a soft
+   pulse that says "platform-picked." */
 @keyframes featured-breathe {
   0%, 100% {
-    border-color: rgba(107, 152, 116, 0.45);
-    box-shadow: 0 0 12px rgba(107, 152, 116, 0.10);
+    border-color: rgba(197, 58, 44, 0.35);
+    box-shadow: 0 0 12px rgba(197, 58, 44, 0.08);
   }
   50% {
-    border-color: rgba(107, 152, 116, 0.85);
-    box-shadow: 0 0 22px rgba(107, 152, 116, 0.25);
+    border-color: rgba(197, 58, 44, 0.75);
+    box-shadow: 0 0 22px rgba(197, 58, 44, 0.20);
   }
 }
 .featured-breathe {
@@ -221,4 +227,111 @@ body > * {
 }
 .featured-breathe:hover {
   animation-duration: 2.5s;
+}
+
+/* ── Stamp-styled buttons ────────────────────────────────────────
+   Primary buttons read as postage stamps: vermillion ground, double
+   inset ring (the "stamp frame"), gold-letter type, subtle ink-press
+   shadow, and a tiny rotation that picks up on hover. The slight
+   rotation is what sells the "stamp pressed on paper" feeling -
+   stamps are never perfectly straight. */
+.stamp-button {
+  position: relative;
+  background: var(--color-mint);                /* vermillion */
+  color: #fff5d6;                                /* off-white ink */
+  border: 1px solid rgba(45, 36, 24, 0.35);
+  box-shadow:
+    inset 0 0 0 3px var(--color-mint),
+    inset 0 0 0 4px rgba(255, 245, 214, 0.55),  /* the inner stamp frame */
+    inset 0 0 0 5px var(--color-mint),
+    0 2px 0 rgba(45, 36, 24, 0.12),
+    0 4px 12px -2px rgba(45, 36, 24, 0.18);
+  transform: rotate(-0.6deg);
+  transition: transform 180ms ease, box-shadow 180ms ease, background 180ms ease;
+  letter-spacing: 0.03em;
+}
+.stamp-button:hover:not(:disabled) {
+  background: var(--color-mint-dim);
+  transform: rotate(0.4deg) translateY(-1px);
+  box-shadow:
+    inset 0 0 0 3px var(--color-mint-dim),
+    inset 0 0 0 4px rgba(255, 245, 214, 0.7),
+    inset 0 0 0 5px var(--color-mint-dim),
+    0 3px 0 rgba(45, 36, 24, 0.14),
+    0 8px 18px -4px rgba(45, 36, 24, 0.22);
+}
+.stamp-button:active:not(:disabled) {
+  transform: rotate(-0.2deg) translateY(0);
+  box-shadow:
+    inset 0 0 0 3px var(--color-mint-dark),
+    inset 0 0 0 4px rgba(255, 245, 214, 0.5),
+    inset 0 0 0 5px var(--color-mint-dark),
+    0 1px 0 rgba(45, 36, 24, 0.10),
+    0 2px 6px -1px rgba(45, 36, 24, 0.14);
+}
+
+/* Secondary stamp: gold leaf + sepia text, for "View" / "Cancel"
+   style calls. Same rotation/lift dynamics. */
+.stamp-button-secondary {
+  position: relative;
+  background: var(--color-background-secondary);
+  color: var(--color-foreground);
+  border: 1px solid var(--color-border);
+  box-shadow:
+    inset 0 0 0 3px var(--color-background-secondary),
+    inset 0 0 0 4px rgba(45, 36, 24, 0.10),
+    inset 0 0 0 5px var(--color-background-secondary),
+    0 2px 0 rgba(45, 36, 24, 0.06),
+    0 4px 10px -2px rgba(45, 36, 24, 0.10);
+  transform: rotate(0.5deg);
+  transition: transform 180ms ease, box-shadow 180ms ease, background 180ms ease;
+  letter-spacing: 0.02em;
+}
+.stamp-button-secondary:hover:not(:disabled) {
+  background: var(--color-background-tertiary);
+  transform: rotate(-0.3deg) translateY(-1px);
+  box-shadow:
+    inset 0 0 0 3px var(--color-background-tertiary),
+    inset 0 0 0 4px rgba(45, 36, 24, 0.18),
+    inset 0 0 0 5px var(--color-background-tertiary),
+    0 3px 0 rgba(45, 36, 24, 0.08),
+    0 6px 14px -3px rgba(45, 36, 24, 0.14);
+}
+.stamp-button-secondary:active:not(:disabled) {
+  transform: rotate(0.2deg) translateY(0);
+}
+
+/* ── Long-tail card scatter ────────────────────────────────────────
+   Tiny alternating rotation on every grid card via :nth-child, so a
+   wall of cards looks like postcards loosely arranged on a desk
+   rather than a CSS grid. The rotation is small enough not to break
+   alignment; the eye reads it as "lived in" rather than "broken." */
+.scatter-grid > * {
+  transition: transform 220ms ease, box-shadow 220ms ease;
+}
+.scatter-grid > *:nth-child(3n+1) { transform: rotate(-0.5deg); }
+.scatter-grid > *:nth-child(3n+2) { transform: rotate(0.3deg); }
+.scatter-grid > *:nth-child(3n+3) { transform: rotate(-0.2deg); }
+.scatter-grid > *:hover { transform: rotate(0deg) translateY(-3px); }
+
+/* ── Red stamp pill ────────────────────────────────────────────────
+   Used for FEATURED / VERIFIED markers. Replaces the previous flat
+   color pill with a stamp-like double-frame in vermillion. */
+.stamp-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  padding: 0.25rem 0.625rem;
+  background: var(--color-mint);
+  color: #fff5d6;
+  font-size: 0.625rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  border: 1px solid rgba(45, 36, 24, 0.25);
+  box-shadow:
+    inset 0 0 0 2px var(--color-mint),
+    inset 0 0 0 3px rgba(255, 245, 214, 0.55),
+    inset 0 0 0 4px var(--color-mint),
+    0 1px 2px rgba(45, 36, 24, 0.15);
+  transform: rotate(-1deg);
 }

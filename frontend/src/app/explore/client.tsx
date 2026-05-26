@@ -429,12 +429,10 @@ function FeaturedCard({ entry }: { entry: FeaturedCollectionEntry }) {
           <img
             src="/mintiNoWords.png"
             alt=""
-            className="w-10 h-10 opacity-80"
+            className="w-12 h-12 opacity-90 drop-shadow"
             loading="lazy"
           />
-          <span className="text-[10px] font-bold tracking-widest text-mint px-2 py-0.5 bg-mint/10 border border-mint/30">
-            FEATURED
-          </span>
+          <span className="stamp-pill">Featured</span>
         </div>
 
         <div className="w-28 h-28 sm:w-32 sm:h-32 overflow-hidden border border-border bg-background-tertiary flex-shrink-0">
@@ -678,12 +676,13 @@ function TrendingPodiumCard({
                 priority={rank === 1}
               />
             </div>
-            <div className="flex items-center gap-1.5">
-              <div
-                className={`text-2xl font-extrabold bg-gradient-to-r ${tier.gradient} bg-clip-text text-transparent`}
+            <div className="flex items-baseline gap-1.5 font-serif">
+              <span className="text-xs text-foreground-secondary">Nº</span>
+              <span
+                className={`text-2xl font-bold bg-gradient-to-r ${tier.gradient} bg-clip-text text-transparent`}
               >
-                #{rank}
-              </div>
+                {rank.toString().padStart(2, "0")}
+              </span>
               <TrendArrow trend={trend} />
             </div>
           </div>
@@ -886,8 +885,13 @@ function TrendingHeroCard({
       href={`/collection/${collection.address}`}
       className="stamp-shadow group relative flex gap-4 items-center p-4 border border-border bg-background-secondary hover:border-border-hover transition-colors"
     >
-      <div className="flex items-center gap-1 w-10 text-sm font-semibold text-foreground-secondary flex-shrink-0">
-        <span>{rank}</span>
+      <div className="flex flex-col items-center w-11 flex-shrink-0">
+        <span className="font-serif text-[10px] text-foreground-secondary leading-none">
+          Nº
+        </span>
+        <span className="font-serif text-base font-bold text-foreground leading-tight">
+          {rank.toString().padStart(2, "0")}
+        </span>
         <TrendArrow trend={trend} />
       </div>
       <div className="w-16 h-16 overflow-hidden border border-border flex-shrink-0">

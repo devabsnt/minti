@@ -2,6 +2,7 @@
 
 import { useParams } from "next/navigation";
 import { useState, useEffect, useMemo } from "react";
+import { usePageTurnSound } from "@/providers/SoundProvider";
 import { useAccount } from "wagmi";
 import { useCollectionListings } from "@/hooks/useListings";
 import { useCollectionBids, useCollectionOffers } from "@/hooks/useBids";
@@ -128,11 +129,13 @@ function CollectionPage({
   // closes. We keep the URL in sync via history.pushState so the back
   // button works, deep links open the modal on top of the gallery, and
   // copy-paste-share works.
+  const playPageTurn = usePageTurnSound();
   const [openTokenId, setOpenTokenId] = useState<string | null>(
     initialTokenId ?? null,
   );
   const openTokenDetail = (tokenId: string) => {
     setOpenTokenId(tokenId);
+    playPageTurn();
     if (typeof window !== "undefined") {
       window.history.pushState(
         { mintiTokenModal: true },

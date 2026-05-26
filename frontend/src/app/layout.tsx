@@ -2,6 +2,7 @@ import type { Metadata, Viewport } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 import { Web3Provider } from "@/providers/Web3Provider";
+import { SoundProvider } from "@/providers/SoundProvider";
 import { Header } from "@/components/layout/Header";
 import { Footer } from "@/components/layout/Footer";
 import { ToastProvider } from "@/components/ui/Toast";
@@ -105,11 +106,13 @@ export default function RootLayout({
         className={`${geistSans.variable} ${geistMono.variable} antialiased min-h-screen flex flex-col`}
       >
         <Web3Provider>
-          <ToastProvider>
-            <Header />
-            <main className="flex-1">{children}</main>
-            <Footer />
-          </ToastProvider>
+          <SoundProvider>
+            <ToastProvider>
+              <Header />
+              <main className="flex-1">{children}</main>
+              <Footer />
+            </ToastProvider>
+          </SoundProvider>
         </Web3Provider>
         <ServiceWorkerRegister />
       </body>

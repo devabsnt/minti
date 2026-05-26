@@ -6,6 +6,14 @@ interface NftGridProps {
   loading?: boolean;
   empty?: boolean;
   emptyMessage?: string;
+  /**
+   * Add a tiny per-card rotation so a wall of cards reads as
+   * postcards loosely arranged on a desk. The hover state un-rotates
+   * to "pick up" the card. Default true since this is part of the
+   * postcard aesthetic now. Pass false for grids where rotation
+   * would interfere (e.g. selection grids inside modals).
+   */
+  scatter?: boolean;
 }
 
 export function NftGrid({
@@ -13,6 +21,7 @@ export function NftGrid({
   loading = false,
   empty = false,
   emptyMessage = "No items found",
+  scatter = true,
 }: NftGridProps) {
   if (loading) {
     return (
@@ -32,7 +41,11 @@ export function NftGrid({
   }
 
   return (
-    <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4">
+    <div
+      className={`grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-5 ${
+        scatter ? "scatter-grid" : ""
+      }`}
+    >
       {children}
     </div>
   );
