@@ -19,7 +19,7 @@ export function CollectionCard({ collection }: CollectionCardProps) {
   return (
     <Link
       href={`/collection/${collection.nftContract}`}
-      className="group border border-border rounded-xl overflow-hidden bg-background-secondary hover:border-mint/30 transition-all hover:shadow-lg hover:shadow-mint-glow"
+      className="group border border-border overflow-hidden bg-background-secondary hover:border-mint/30 transition-all hover:shadow-lg hover:shadow-mint-glow"
     >
       <div className="aspect-square bg-background-tertiary">
         {evmfs && previewTokenId > 0 ? (

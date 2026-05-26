@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState, useCallback } from "react";
+import { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { isAddress } from "viem";
 
@@ -131,6 +131,57 @@ export function ExploreClient() {
       })
       .slice(0, 10);
   }, [trendingData, registryAddresses, isHidden, snapshotByAddress]);
+
+  // Trend arrows: persist the previous rank-by-address mapping to
+  // localStorage so we can show ▲/▼ when a collection moves between
+  // visits. Saved AFTER reading (so the visible arrows reflect movement
+  // *into* the current ordering, not into the same ordering we just
+  // wrote). Untracked collections (new entries) get "same" treatment so
+  // we don't lie with a fake arrow.
+  const previousRanksRef = useRef<Map<string, number> | null>(null);
+  if (previousRanksRef.current === null) {
+    if (typeof window !== "undefined") {
+      try {
+        const raw = window.localStorage.getItem("minti.trending.previousRanks");
+        previousRanksRef.current = raw
+          ? new Map(JSON.parse(raw) as [string, number][])
+          : new Map();
+      } catch {
+        previousRanksRef.current = new Map();
+      }
+    } else {
+      previousRanksRef.current = new Map();
+    }
+  }
+  const trendDirections = useMemo(() => {
+    const prev = previousRanksRef.current!;
+    const out = new Map<string, "up" | "down" | "same" | "new">();
+    trendingHero.forEach((c, idx) => {
+      const key = c.address.toLowerCase();
+      const previousIdx = prev.get(key);
+      if (previousIdx === undefined) out.set(key, "new");
+      else if (previousIdx > idx) out.set(key, "up");
+      else if (previousIdx < idx) out.set(key, "down");
+      else out.set(key, "same");
+    });
+    return out;
+  }, [trendingHero]);
+  useEffect(() => {
+    if (trendingHero.length === 0) return;
+    if (typeof window === "undefined") return;
+    const entries: [string, number][] = trendingHero.map((c, idx) => [
+      c.address.toLowerCase(),
+      idx,
+    ]);
+    try {
+      window.localStorage.setItem(
+        "minti.trending.previousRanks",
+        JSON.stringify(entries),
+      );
+    } catch {
+      // localStorage can throw in private mode / quota — fine to ignore.
+    }
+  }, [trendingHero]);
 
   // ── Long-tail / all collections (paginated) ───────────────────────
   // tier=2 by default; "show hidden" includes tier 1 (real but quieter).
@@ -263,6 +314,7 @@ export function ExploreClient() {
                   key={collection.address}
                   rank={(idx + 1) as 1 | 2 | 3}
                   collection={collection}
+                  trend={trendDirections.get(collection.address.toLowerCase())}
                 />
               ))}
             </div>
@@ -274,6 +326,7 @@ export function ExploreClient() {
                     key={collection.address}
                     rank={idx + 4}
                     collection={collection}
+                    trend={trendDirections.get(collection.address.toLowerCase())}
                   />
                 ))}
               </div>
@@ -398,7 +451,7 @@ function LongTailCard({ collection }: { collection: ApiCollection }) {
   return (
     <a
       href={`/collection/${collection.address}`}
-      className="block border border-border rounded-xl overflow-hidden bg-background-secondary hover:border-mint/30 transition-all hover:shadow-lg hover:shadow-mint-glow"
+      className="block border border-border overflow-hidden bg-background-secondary hover:border-mint/30 transition-all hover:shadow-lg hover:shadow-mint-glow"
     >
       <NftImage
         src={collection.sampleImageUrl ?? ""}
@@ -462,37 +515,40 @@ function buildCollageImages(
 
 const PODIUM_TIERS: Record<
   1 | 2 | 3,
-  { border: string; ring: string; gradient: string }
+  { borderClass: string; ring: string; gradient: string }
 > = {
   1: {
-    border: "border-yellow-400/80",
-    ring: "shadow-yellow-400/25",
+    borderClass: "podium-border podium-gold",
+    ring: "shadow-yellow-400/30",
     gradient: "from-yellow-200 to-yellow-500",
   },
   2: {
-    border: "border-zinc-300/80",
-    ring: "shadow-zinc-300/20",
+    borderClass: "podium-border podium-silver",
+    ring: "shadow-zinc-300/25",
     gradient: "from-zinc-100 to-zinc-400",
   },
   3: {
-    border: "border-amber-700/80",
-    ring: "shadow-amber-700/20",
+    borderClass: "podium-border podium-bronze",
+    ring: "shadow-amber-700/25",
     gradient: "from-amber-500 to-amber-800",
   },
 };
 
 /**
  * Full-width podium card for the top 3 trending collections. Gold,
- * silver, or bronze border by rank, with a dimmed collage of token
- * images as the background and the canonical thumbnail+info pinned to
- * the left.
+ * silver, or bronze metallic border by rank (animated shimmer), with a
+ * dimmed collage of token images as the background and the canonical
+ * thumbnail+info pinned to the left. Optional trend arrow shows
+ * movement since the user's last visit.
  */
 function TrendingPodiumCard({
   rank,
   collection,
+  trend,
 }: {
   rank: 1 | 2 | 3;
   collection: ApiCollection;
+  trend?: "up" | "down" | "same" | "new";
 }) {
   const name = collection.name || collection.address.slice(0, 10);
   const symbol = collection.symbol || "";
@@ -523,87 +579,97 @@ function TrendingPodiumCard({
   return (
     <a
       href={`/collection/${collection.address}`}
-      className={`group collage-drift-on-hover relative block border-2 ${tier.border} overflow-hidden bg-background-secondary hover:shadow-lg ${tier.ring} transition-all`}
+      // Outer: animated metal-gradient wrapper. `p-1` becomes the visible
+      // 4px shimmering border around the inner card.
+      className={`group collage-drift-on-hover block ${tier.borderClass} hover:shadow-xl ${tier.ring} transition-all`}
     >
-      {/* Collage background — tile of evenly-sampled token images.
-          Plain <img> tags with native lazy loading: no watchdog timers,
-          no fallback ladder, no React state — just decoration. If a
-          single tile fails, the background simply has a gap, which the
-          dimming overlay hides. The track is twice as wide as the
-          visible card and slides slowly to the left on hover. */}
-      <div className="absolute inset-0 overflow-hidden pointer-events-none select-none">
-        <div
-          className="collage-drift-track flex h-full"
-          style={{ width: driftable ? "200%" : "100%" }}
-        >
-          {collageRow.map((url, i) => (
-            // eslint-disable-next-line @next/next/no-img-element
-            <img
-              key={i}
-              src={url}
-              alt=""
-              aria-hidden
-              loading="lazy"
-              decoding="async"
-              // eslint-disable-next-line @typescript-eslint/no-explicit-any
-              {...({ fetchpriority: "low" } as any)}
-              referrerPolicy="no-referrer"
-              className="h-full object-cover flex-shrink-0"
-              style={{ width: `${tileWidthPct}%` }}
-            />
-          ))}
-        </div>
-      </div>
-      {/* Dimming so the collage stays atmospheric, not noisy. Left side
-          stays darker so the thumbnail / text remain legible. */}
-      <div className="absolute inset-0 bg-background-secondary/55" />
-      <div className="absolute inset-0 bg-gradient-to-r from-background-secondary via-background-secondary/70 to-background-secondary/30" />
-
-      {/* Content */}
-      <div className="relative z-10 flex gap-4 p-4 items-start">
-        <div className="flex flex-col items-center gap-2 flex-shrink-0">
-          <div className="w-28 h-28 sm:w-32 sm:h-32 rounded-lg overflow-hidden border border-border bg-background-tertiary">
-            <NftImage
-              src={collection.sampleImageUrl ?? ""}
-              alt={name}
-              className="w-full h-full"
-              priority={rank === 1}
-            />
-          </div>
+      <div className="relative overflow-hidden bg-background-secondary">
+        {/* Collage background — tile of evenly-sampled token images.
+            Plain <img> tags with native lazy loading: no watchdog
+            timers, no fallback ladder, no React state — just decoration.
+            If a single tile fails, the background simply has a gap,
+            which the dimming overlay hides. The track is twice as wide
+            as the visible card and slides slowly to the left on hover. */}
+        <div className="absolute inset-0 overflow-hidden pointer-events-none select-none">
           <div
-            className={`text-2xl font-extrabold bg-gradient-to-r ${tier.gradient} bg-clip-text text-transparent`}
+            className="collage-drift-track flex h-full"
+            style={{ width: driftable ? "200%" : "100%" }}
           >
-            #{rank}
+            {collageRow.map((url, i) => (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img
+                key={i}
+                src={url}
+                alt=""
+                aria-hidden
+                loading="lazy"
+                decoding="async"
+                // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                {...({ fetchpriority: "low" } as any)}
+                referrerPolicy="no-referrer"
+                className="h-full object-cover flex-shrink-0"
+                style={{ width: `${tileWidthPct}%` }}
+              />
+            ))}
           </div>
         </div>
-        <div className="flex-1 min-w-0 flex flex-col gap-1">
-          <div className="text-xl sm:text-2xl font-bold truncate">{name}</div>
-          {symbol && (
-            <div className="text-sm text-foreground-secondary truncate">
-              {symbol}
+        {/* Dimming so the collage stays atmospheric, not noisy. Left
+            side stays darker so the thumbnail / text remain legible. */}
+        <div className="absolute inset-0 bg-background-secondary/55" />
+        <div className="absolute inset-0 bg-gradient-to-r from-background-secondary via-background-secondary/70 to-background-secondary/30" />
+
+        {/* Content */}
+        <div className="relative z-10 flex gap-4 p-4 items-start">
+          <div className="flex flex-col items-center gap-2 flex-shrink-0">
+            <div className="w-28 h-28 sm:w-32 sm:h-32 overflow-hidden border border-border bg-background-tertiary">
+              <NftImage
+                src={collection.sampleImageUrl ?? ""}
+                alt={name}
+                className="w-full h-full"
+                priority={rank === 1}
+              />
             </div>
-          )}
-          <div className="flex flex-wrap items-center gap-x-4 gap-y-1 mt-2 text-sm">
-            <span>
-              <span className="text-mint font-medium">
-                {formatCompact(transferCount)}
-              </span>
-              <span className="text-foreground-secondary ml-1">transfers</span>
-            </span>
-            <span>
-              <span className="text-mint font-medium">
-                {formatNumber(uniqueHolders)}
-              </span>
-              <span className="text-foreground-secondary ml-1">holders</span>
-            </span>
-            {supply > 0 && (
+            <div className="flex items-center gap-1.5">
+              <div
+                className={`text-2xl font-extrabold bg-gradient-to-r ${tier.gradient} bg-clip-text text-transparent`}
+              >
+                #{rank}
+              </div>
+              <TrendArrow trend={trend} />
+            </div>
+          </div>
+          <div className="flex-1 min-w-0 flex flex-col gap-1">
+            <div className="text-xl sm:text-2xl font-bold truncate">{name}</div>
+            {symbol && (
+              <div className="text-sm text-foreground-secondary truncate">
+                {symbol}
+              </div>
+            )}
+            <div className="flex flex-wrap items-center gap-x-4 gap-y-1 mt-2 text-sm">
               <span>
                 <span className="text-mint font-medium">
-                  {formatNumber(supply)}
+                  {formatCompact(transferCount)}
                 </span>
-                <span className="text-foreground-secondary ml-1">items</span>
+                <span className="text-foreground-secondary ml-1">
+                  transfers
+                </span>
               </span>
-            )}
+              <span>
+                <span className="text-mint font-medium">
+                  {formatNumber(uniqueHolders)}
+                </span>
+                <span className="text-foreground-secondary ml-1">holders</span>
+              </span>
+              {supply > 0 && (
+                <span>
+                  <span className="text-mint font-medium">
+                    {formatNumber(supply)}
+                  </span>
+                  <span className="text-foreground-secondary ml-1">items</span>
+                </span>
+              )}
+              <FloorPrice contractAddress={collection.address} />
+            </div>
           </div>
         </div>
       </div>
@@ -611,13 +677,80 @@ function TrendingPodiumCard({
   );
 }
 
+/** ▲ / ▼ / – indicator for trending-rank movement since the last visit. */
+function TrendArrow({ trend }: { trend?: "up" | "down" | "same" | "new" }) {
+  if (!trend || trend === "new") return null;
+  if (trend === "same") {
+    return (
+      <span
+        title="No change since last visit"
+        className="text-foreground-secondary/60 text-sm leading-none"
+      >
+        –
+      </span>
+    );
+  }
+  if (trend === "up") {
+    return (
+      <span
+        title="Moved up since last visit"
+        className="text-mint text-sm leading-none"
+        aria-label="trending up"
+      >
+        ▲
+      </span>
+    );
+  }
+  return (
+    <span
+      title="Moved down since last visit"
+      className="text-danger text-sm leading-none"
+      aria-label="trending down"
+    >
+      ▼
+    </span>
+  );
+}
+
+/**
+ * Floor-price slot. Reads from `useCollectionFloor(addr)` — currently
+ * always returns `null` because the marketplace contract isn't deployed
+ * yet. Once it is, this hook can be wired up to read active listings
+ * from `MintiMarketplace` and the floor will appear in every podium /
+ * card without further changes.
+ */
+function FloorPrice({ contractAddress }: { contractAddress: string }) {
+  const floor = useCollectionFloor(contractAddress);
+  if (!floor) return null;
+  return (
+    <span>
+      <span className="text-mint font-medium">{floor.priceFormatted}</span>
+      <span className="text-foreground-secondary ml-1">floor</span>
+    </span>
+  );
+}
+
+/**
+ * Placeholder hook for collection floor price. Will read from
+ * `MintiMarketplace` once it's deployed and indexed. For now returns
+ * null so every consumer can opt into the slot without conditional
+ * imports — the day the marketplace ships, swap this body for the
+ * actual implementation and floor prices appear everywhere it's
+ * referenced.
+ */
+function useCollectionFloor(_contractAddress: string): { priceFormatted: string } | null {
+  return null;
+}
+
 /** Bigger card for the trending hero strip. */
 function TrendingHeroCard({
   rank,
   collection,
+  trend,
 }: {
   rank: number;
   collection: ApiCollection;
+  trend?: "up" | "down" | "same" | "new";
 }) {
   const name = collection.name || collection.address.slice(0, 10);
   const symbol = collection.symbol || "";
@@ -626,12 +759,13 @@ function TrendingHeroCard({
   return (
     <a
       href={`/collection/${collection.address}`}
-      className="group relative flex gap-3 items-center p-3 border border-border rounded-xl bg-background-secondary hover:border-mint/40 hover:shadow-lg hover:shadow-mint-glow transition-all"
+      className="group relative flex gap-3 items-center p-3 border border-border bg-background-secondary hover:border-mint/40 hover:shadow-lg hover:shadow-mint-glow transition-all"
     >
-      <div className="flex items-center justify-center w-6 text-sm font-bold text-foreground-secondary/70 flex-shrink-0">
-        {rank}
+      <div className="flex items-center gap-0.5 w-9 text-sm font-bold text-foreground-secondary/70 flex-shrink-0">
+        <span>{rank}</span>
+        <TrendArrow trend={trend} />
       </div>
-      <div className="w-16 h-16 rounded-lg overflow-hidden border border-border flex-shrink-0">
+      <div className="w-16 h-16 overflow-hidden border border-border flex-shrink-0">
         <NftImage
           src={collection.sampleImageUrl ?? ""}
           alt={name}

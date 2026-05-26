@@ -25,13 +25,12 @@ export default function HomePage() {
         <h1 className="text-4xl md:text-6xl font-bold mb-4">
           The home for
           <br />
-          <span className="text-mint">100% on-chain</span> collections
+          <span className="text-mint">on-chain</span> collections
         </h1>
 
         <p className="text-foreground-secondary text-lg max-w-xl mb-8">
-          Launch NFT collections whose art, metadata, and rendering live
-          entirely on chain via EVMFS. No IPFS, no hosting, no expiry. Free
-          your art forever.
+          Launch NFT collections that live entirely on chain via EVMFS — no
+          hosting, no expiry.
         </p>
 
         <div className="flex gap-3">

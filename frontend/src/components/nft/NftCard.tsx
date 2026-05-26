@@ -43,7 +43,7 @@ export function NftCard({
   return (
     <Link
       href={`/collection/${contractAddress}/${tokenId}`}
-      className="group border border-border rounded-xl overflow-hidden bg-background-secondary hover:border-mint/30 transition-all hover:shadow-lg hover:shadow-mint-glow"
+      className="group border border-border overflow-hidden bg-background-secondary hover:border-mint/30 transition-all hover:shadow-lg hover:shadow-mint-glow"
     >
       <NftImage
         // Force remount when we swap from synthesized to fetched URL so

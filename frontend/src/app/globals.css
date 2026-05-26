@@ -45,14 +45,109 @@ body {
   color: var(--color-mint);
 }
 
-/* Trending podium collage. Pauses when not hovered, slides slowly on
-   hover. The row holds the collage images twice over so the
-   translateX(-50%) endpoint visually matches the start position — no
-   visible jump as the animation loops. */
+/* Trending podium collage. Animation runs constantly but is paused by
+   default; hover toggles it to "running" via `animation-play-state`.
+   Crucially, leaving hover only pauses — it does NOT reset the
+   transform, so the next hover resumes from exactly where it stopped.
+   The row holds the collage images twice over so translateX(-50%)
+   visually matches the start position (no visible jump on loop). */
 @keyframes collage-drift {
   from { transform: translateX(0); }
   to { transform: translateX(-50%); }
 }
+.collage-drift-track {
+  animation: collage-drift 45s linear infinite;
+  animation-play-state: paused;
+  will-change: transform;
+}
 .collage-drift-on-hover:hover .collage-drift-track {
-  animation: collage-drift 30s linear infinite;
+  animation-play-state: running;
+}
+
+/* Metallic-finish borders for the trending podium. Implemented as an
+   outer wrapper with a tall multi-stop linear gradient as its
+   background, plus an inner element with the actual card background —
+   so the 4px "border" you see is just the gradient peeking around the
+   inner box.
+
+   The background is sized at 200% width and the animation slides it
+   continuously, so a "highlight band" sweeps slowly across the metal.
+   The gradient itself is dark → bright → near-white → bright → dark
+   repeated twice so it tiles seamlessly when background-position wraps.
+   `border-image` would be cleaner conceptually but isn't animatable. */
+.podium-border {
+  position: relative;
+  padding: 4px;
+  background-size: 200% 200%;
+  animation: podium-shimmer 8s linear infinite;
+}
+.podium-gold {
+  background-image: linear-gradient(
+    115deg,
+    #3d2e0a 0%,
+    #6b5320 6%,
+    #b8860b 12%,
+    #f3c969 18%,
+    #fff5c8 22%,
+    #f3c969 26%,
+    #b8860b 32%,
+    #6b5320 38%,
+    #3d2e0a 50%,
+    #6b5320 56%,
+    #b8860b 62%,
+    #f3c969 68%,
+    #fff5c8 72%,
+    #f3c969 76%,
+    #b8860b 82%,
+    #6b5320 88%,
+    #3d2e0a 100%
+  );
+}
+.podium-silver {
+  background-image: linear-gradient(
+    115deg,
+    #2e2e2e 0%,
+    #5a5a5a 6%,
+    #9c9c9c 12%,
+    #d8d8d8 18%,
+    #ffffff 22%,
+    #d8d8d8 26%,
+    #9c9c9c 32%,
+    #5a5a5a 38%,
+    #2e2e2e 50%,
+    #5a5a5a 56%,
+    #9c9c9c 62%,
+    #d8d8d8 68%,
+    #ffffff 72%,
+    #d8d8d8 76%,
+    #9c9c9c 82%,
+    #5a5a5a 88%,
+    #2e2e2e 100%
+  );
+}
+.podium-bronze {
+  background-image: linear-gradient(
+    115deg,
+    #1f0f04 0%,
+    #4a230d 6%,
+    #8a4a22 12%,
+    #c87a3c 18%,
+    #f0c594 22%,
+    #c87a3c 26%,
+    #8a4a22 32%,
+    #4a230d 38%,
+    #1f0f04 50%,
+    #4a230d 56%,
+    #8a4a22 62%,
+    #c87a3c 68%,
+    #f0c594 72%,
+    #c87a3c 76%,
+    #8a4a22 82%,
+    #4a230d 88%,
+    #1f0f04 100%
+  );
+}
+@keyframes podium-shimmer {
+  0%   { background-position:   0% 50%; }
+  100% { background-position: 200% 50%; }
 }
