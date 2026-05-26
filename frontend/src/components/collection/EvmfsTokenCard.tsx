@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import type { MouseEvent } from "react";
 
 import { useTokenViewerUri } from "@/hooks/useTokenViewerUri";
 import { useEvmfsTokenMetadata } from "@/hooks/useEvmfsMetadata";
@@ -17,6 +18,8 @@ interface EvmfsTokenCardProps {
   evmfsContract?: EvmfsContract;
   price?: bigint;
   seller?: string;
+  /** See NftCard.onClick. Opens modal in lieu of navigating. */
+  onClick?: (e: MouseEvent<HTMLAnchorElement>) => void;
 }
 
 export function EvmfsTokenCard({
@@ -27,6 +30,7 @@ export function EvmfsTokenCard({
   evmfsContract,
   price,
   seller,
+  onClick,
 }: EvmfsTokenCardProps) {
   const { browseChainId } = useBrowseChain();
   const symbol = getNativeSymbol(browseChainId);
@@ -45,7 +49,8 @@ export function EvmfsTokenCard({
   return (
     <Link
       href={`/collection/${contractAddress}/${tokenId}`}
-      className="group border border-border rounded-xl overflow-hidden bg-background-secondary hover:border-mint/30 transition-all hover:shadow-lg hover:shadow-mint-glow"
+      onClick={onClick}
+      className="group border border-border overflow-hidden bg-background-secondary hover:border-mint/30 transition-all hover:shadow-lg hover:shadow-mint-glow"
     >
       <div className="aspect-square bg-background-tertiary">
         {viewerUri ? (

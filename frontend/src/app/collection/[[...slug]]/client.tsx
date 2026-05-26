@@ -77,12 +77,14 @@ export function CollectionCatchAll() {
 
   const collectionAddress = slug[0] as `0x${string}`;
 
+  // A trailing tokenId segment opens the detail modal on top of the
+  // gallery, rather than navigating away. CollectionPage handles the
+  // modal state, URL sync, and direct-link initialization itself.
+  let initialTokenId: string | undefined;
   if (slug.length >= 2) {
-    // Validate tokenId is a valid number
-    let tokenId: string;
     try {
       BigInt(slug[1]);
-      tokenId = slug[1];
+      initialTokenId = slug[1];
     } catch {
       return (
         <div className="max-w-7xl mx-auto px-4 py-20 text-center text-foreground-secondary">
@@ -90,15 +92,14 @@ export function CollectionCatchAll() {
         </div>
       );
     }
-    return (
-      <TokenDetailPage
-        collectionAddress={collectionAddress}
-        tokenId={tokenId}
-      />
-    );
   }
 
-  return <CollectionPage collectionAddress={collectionAddress} />;
+  return (
+    <CollectionPage
+      collectionAddress={collectionAddress}
+      initialTokenId={initialTokenId}
+    />
+  );
 }
 
 // ═══════════════════════════ COLLECTION PAGE ═══════════════════════════
@@ -107,18 +108,95 @@ type CollectionTab = "browse" | "listings";
 
 function CollectionPage({
   collectionAddress,
+  initialTokenId,
 }: {
   collectionAddress: `0x${string}`;
+  initialTokenId?: string;
 }) {
   const { address } = useAccount();
-  // Wallet address is undefined on SSR but populated after client hydration —
-  // any conditional that depends on it would mismatch. Gate those branches on
-  // `mounted` so the server renders the unconnected state and the client
+  // Wallet address is undefined on SSR but populated after client hydration,
+  // so any conditional that depends on it would mismatch. Gate those branches
+  // on `mounted` so the server renders the unconnected state and the client
   // re-renders after hydration without React flagging it.
   const [mounted, setMounted] = useState(false);
   useEffect(() => setMounted(true), []);
   const [tab, setTab] = useState<CollectionTab>("browse");
   const [browsePage, setBrowsePage] = useState(0);
+
+  // Token detail modal state. URL is the source of truth: a trailing
+  // tokenId in `/collection/0xabc/123` opens the modal, removing it
+  // closes. We keep the URL in sync via history.pushState so the back
+  // button works, deep links open the modal on top of the gallery, and
+  // copy-paste-share works.
+  const [openTokenId, setOpenTokenId] = useState<string | null>(
+    initialTokenId ?? null,
+  );
+  const openTokenDetail = (tokenId: string) => {
+    setOpenTokenId(tokenId);
+    if (typeof window !== "undefined") {
+      window.history.pushState(
+        { mintiTokenModal: true },
+        "",
+        `/collection/${collectionAddress}/${tokenId}`,
+      );
+    }
+  };
+  const closeTokenDetail = () => {
+    setOpenTokenId(null);
+    if (typeof window !== "undefined") {
+      // Use back() if our pushState frame is the current entry,
+      // otherwise replace, so we don't accumulate empty entries.
+      if (window.history.state?.mintiTokenModal) {
+        window.history.back();
+      } else {
+        window.history.pushState(null, "", `/collection/${collectionAddress}`);
+      }
+    }
+  };
+  // Sync state with the back/forward buttons.
+  useEffect(() => {
+    const onPop = () => {
+      if (typeof window === "undefined") return;
+      const m = window.location.pathname.match(
+        /^\/collection\/[^/]+\/([^/?#]+)/,
+      );
+      setOpenTokenId(m ? m[1] : null);
+    };
+    window.addEventListener("popstate", onPop);
+    return () => window.removeEventListener("popstate", onPop);
+  }, []);
+  // Body scroll lock + Escape-to-close while the modal is open.
+  useEffect(() => {
+    if (!openTokenId) return;
+    const prevOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") closeTokenDetail();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => {
+      document.body.style.overflow = prevOverflow;
+      window.removeEventListener("keydown", onKey);
+    };
+    // closeTokenDetail is stable for our purposes; deps capture changes
+    // to collectionAddress which would never change for one CollectionPage
+    // mount anyway.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [openTokenId]);
+  // Helper to pass to NftCard / EvmfsTokenCard. preventDefault stops
+  // navigation; right-click / middle-click still follow the href so
+  // "open in new tab" works.
+  const handleTokenClick =
+    (tokenId: string) => (e: React.MouseEvent<HTMLAnchorElement>) => {
+      // Modifier-clicks (cmd/ctrl-click for new tab, shift-click for
+      // new window) should NOT open the modal, they should open the
+      // detail page in another tab/window via the native href.
+      if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) {
+        return;
+      }
+      e.preventDefault();
+      openTokenDetail(tokenId);
+    };
   const [listingPage, setListingPage] = useState(0);
   const [showOfferModal, setShowOfferModal] = useState(false);
   const [traitSelection, setTraitSelection] = useState<TraitSelection>({});
@@ -434,6 +512,7 @@ function CollectionPage({
                 key={`owned-${token.contractAddress}-${token.tokenId}`}
                 contractAddress={token.contractAddress}
                 tokenId={token.tokenId}
+                onClick={handleTokenClick(token.tokenId.toString())}
               />
             ))}
           </NftGrid>
@@ -503,6 +582,7 @@ function CollectionPage({
                     metadataBlock={evmfsRecord!.metadataBlock}
                     evmfsContract={evmfsRecord!.evmfsContract as EvmfsContract}
                     seller={token.owner !== address?.toLowerCase() ? token.owner : undefined}
+                    onClick={handleTokenClick(token.tokenId.toString())}
                   />
                 ) : (
                   <NftCard
@@ -518,6 +598,7 @@ function CollectionPage({
                       synthesizeTokenMetadata(token.tokenId, imageUrlTemplate, sampleImageUrl)
                     }
                     seller={token.owner !== address?.toLowerCase() ? token.owner : undefined}
+                    onClick={handleTokenClick(token.tokenId.toString())}
                   />
                 ),
               )}
@@ -566,6 +647,7 @@ function CollectionPage({
                 price={listing.price}
                 seller={listing.seller}
                 isERC1155={listing.isERC1155}
+                onClick={handleTokenClick(listing.tokenId.toString())}
               />
             ))}
           </NftGrid>
@@ -601,18 +683,91 @@ function CollectionPage({
         onClose={() => setShowOfferModal(false)}
         nftContract={collectionAddress}
       />
+
+      {openTokenId !== null && (
+        <TokenDetailModal
+          collectionAddress={collectionAddress}
+          tokenId={openTokenId}
+          onClose={closeTokenDetail}
+        />
+      )}
     </div>
   );
 }
 
-// ═══════════════════════════ TOKEN DETAIL PAGE ═══════════════════════════
+// ═══════════════════════════ TOKEN DETAIL MODAL / PAGE ═══════════════════════════
+
+/**
+ * Modal wrapper around the token detail content. Renders as a fixed
+ * overlay with a dimmed/blurred backdrop. Clicking the backdrop or the
+ * back arrow in the header closes it. Escape close is handled by the
+ * parent CollectionPage so it also fires when focus is somewhere
+ * arbitrary (a button, an input inside a sub-modal, etc.).
+ */
+function TokenDetailModal({
+  collectionAddress,
+  tokenId,
+  onClose,
+}: {
+  collectionAddress: `0x${string}`;
+  tokenId: string;
+  onClose: () => void;
+}) {
+  return (
+    <div
+      className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm overflow-y-auto"
+      onClick={onClose}
+      role="dialog"
+      aria-modal="true"
+    >
+      <div
+        className="relative mx-auto my-4 sm:my-8 max-w-7xl bg-background border border-border"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="sticky top-0 z-10 flex items-center gap-3 px-4 py-3 border-b border-border bg-background/95 backdrop-blur-sm">
+          <button
+            type="button"
+            onClick={onClose}
+            className="p-1 text-foreground-secondary hover:text-foreground transition-colors"
+            aria-label="Close"
+            title="Close (Esc)"
+          >
+            <svg
+              xmlns="http://www.w3.org/2000/svg"
+              viewBox="0 0 20 20"
+              fill="currentColor"
+              className="w-5 h-5"
+              aria-hidden
+            >
+              <path
+                fillRule="evenodd"
+                d="M12.79 5.23a.75.75 0 0 1 0 1.06L9.06 10l3.73 3.71a.75.75 0 1 1-1.06 1.06l-4.25-4.24a.75.75 0 0 1 0-1.06l4.25-4.24a.75.75 0 0 1 1.06 0Z"
+                clipRule="evenodd"
+              />
+            </svg>
+          </button>
+          <span className="text-xs text-foreground-secondary truncate">
+            Token #{tokenId}
+          </span>
+        </div>
+        <TokenDetailPage
+          collectionAddress={collectionAddress}
+          tokenId={tokenId}
+          inModal
+        />
+      </div>
+    </div>
+  );
+}
 
 function TokenDetailPage({
   collectionAddress,
   tokenId,
+  inModal = false,
 }: {
   collectionAddress: `0x${string}`;
   tokenId: string;
+  inModal?: boolean;
 }) {
   const { address } = useAccount();
   // Mount gate for wallet-address-dependent conditionals — see CollectionPage
@@ -669,9 +824,13 @@ function TokenDetailPage({
   );
 
   return (
-    <div className="max-w-7xl mx-auto px-4 py-8">
+    <div
+      className={
+        inModal ? "px-4 sm:px-6 py-6" : "max-w-7xl mx-auto px-4 py-8"
+      }
+    >
       <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
-        <div className="rounded-xl overflow-hidden border border-border">
+        <div className="overflow-hidden border border-border">
           {isLoading ? (
             <div className="aspect-square flex items-center justify-center bg-background-secondary">
               <Spinner size="lg" />
@@ -697,12 +856,14 @@ function TokenDetailPage({
 
         <div className="space-y-6">
           <div>
-            <a
-              href={`/collection/${collectionAddress}`}
-              className="text-sm text-mint hover:underline"
-            >
-              {truncateAddress(collectionAddress, 8)}
-            </a>
+            {!inModal && (
+              <a
+                href={`/collection/${collectionAddress}`}
+                className="text-sm text-mint hover:underline"
+              >
+                {truncateAddress(collectionAddress, 8)}
+              </a>
+            )}
             <h1 className="text-3xl font-bold mt-1">
               {metadata?.name || `#${tokenId}`}
             </h1>
@@ -952,11 +1113,13 @@ function OwnedCollectionCard({
   tokenId,
   imageUrlTemplate,
   sampleImageUrl,
+  onClick,
 }: {
   contractAddress: `0x${string}`;
   tokenId: bigint;
   imageUrlTemplate?: string | null;
   sampleImageUrl?: string | null;
+  onClick?: (e: React.MouseEvent<HTMLAnchorElement>) => void;
 }) {
   // Skip the per-token fetch when we can synthesize from collection
   // template or shared sample image. Avoids scatter-502 storm.
@@ -973,6 +1136,7 @@ function OwnedCollectionCard({
       contractAddress={contractAddress}
       tokenId={tokenId.toString()}
       metadata={metadata}
+      onClick={onClick}
     />
   );
 }
@@ -985,6 +1149,7 @@ function ListingCardWithMetadata({
   isERC1155,
   imageUrlTemplate,
   sampleImageUrl,
+  onClick,
 }: {
   nftContract: `0x${string}`;
   tokenId: bigint;
@@ -993,6 +1158,7 @@ function ListingCardWithMetadata({
   isERC1155: boolean;
   imageUrlTemplate?: string | null;
   sampleImageUrl?: string | null;
+  onClick?: (e: React.MouseEvent<HTMLAnchorElement>) => void;
 }) {
   const haveSynth = !!imageUrlTemplate || !!sampleImageUrl;
   const { data: fetched } = useNftMetadata(
@@ -1010,6 +1176,7 @@ function ListingCardWithMetadata({
       metadata={metadata}
       price={price}
       seller={seller}
+      onClick={onClick}
     />
   );
 }

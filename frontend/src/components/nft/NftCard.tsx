@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useState } from "react";
+import { useState, type MouseEvent } from "react";
 import { NftImage } from "./NftImage";
 import { formatPrice, truncateAddress } from "@/lib/format";
 import type { NftMetadata } from "@/types/nft";
@@ -15,6 +15,13 @@ interface NftCardProps {
   metadata?: NftMetadata;
   price?: bigint;
   seller?: string;
+  /**
+   * Optional left-click handler. When provided, the parent typically
+   * calls e.preventDefault() and opens the token detail in a modal
+   * overlay instead of navigating. Right-click / middle-click still
+   * follow the href so "open in new tab" works.
+   */
+  onClick?: (e: MouseEvent<HTMLAnchorElement>) => void;
 }
 
 export function NftCard({
@@ -23,6 +30,7 @@ export function NftCard({
   metadata,
   price,
   seller,
+  onClick,
 }: NftCardProps) {
   const { browseChainId } = useBrowseChain();
   const symbol = getNativeSymbol(browseChainId);
@@ -43,6 +51,7 @@ export function NftCard({
   return (
     <Link
       href={`/collection/${contractAddress}/${tokenId}`}
+      onClick={onClick}
       className="group border border-border overflow-hidden bg-background-secondary hover:border-mint/30 transition-all hover:shadow-lg hover:shadow-mint-glow"
     >
       <NftImage

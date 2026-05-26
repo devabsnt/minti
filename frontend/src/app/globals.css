@@ -151,3 +151,26 @@ body {
   0%   { background-position:   0% 50%; }
   100% { background-position: 200% 50%; }
 }
+
+/* Featured card border. Subtle mint "breathing" effect: the border
+   color and surrounding glow softly pulse on a slow loop. Less loud
+   than the podium's metallic shimmer (which says "ranked") and more
+   "platform-vouched" (which says "minti picked this").
+   Hover boosts the brightness so the user gets feedback the card is
+   interactive. */
+@keyframes featured-breathe {
+  0%, 100% {
+    border-color: rgba(74, 222, 128, 0.25);
+    box-shadow: 0 0 12px rgba(74, 222, 128, 0.06);
+  }
+  50% {
+    border-color: rgba(74, 222, 128, 0.55);
+    box-shadow: 0 0 22px rgba(74, 222, 128, 0.18);
+  }
+}
+.featured-breathe {
+  animation: featured-breathe 5s ease-in-out infinite;
+}
+.featured-breathe:hover {
+  animation-duration: 2.5s;
+}

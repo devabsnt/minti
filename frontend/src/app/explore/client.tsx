@@ -415,7 +415,7 @@ function FeaturedCard({ entry }: { entry: FeaturedCollectionEntry }) {
   return (
     <a
       href={`/collection/${collection.address}`}
-      className="group relative block border border-mint/30 overflow-hidden bg-background-secondary hover:border-mint/60 hover:shadow-lg hover:shadow-mint-glow transition-all"
+      className="featured-breathe group relative block border overflow-hidden bg-background-secondary transition-all"
     >
       <div className="relative flex gap-4 p-4 items-start">
         {/* Mascot + FEATURED label in the top-right. */}
@@ -425,9 +425,9 @@ function FeaturedCard({ entry }: { entry: FeaturedCollectionEntry }) {
         >
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img
-            src="/mintiMascot.png"
+            src="/mintiNoWords.png"
             alt=""
-            className="w-6 h-6 opacity-70"
+            className="w-10 h-10 opacity-80"
             loading="lazy"
           />
           <span className="text-[10px] font-bold tracking-widest text-mint px-2 py-0.5 bg-mint/10 border border-mint/30">
