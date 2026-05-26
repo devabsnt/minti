@@ -82,9 +82,24 @@ const INITIAL_STATE: EnumerationState = {
   rarityRanks: {},
 };
 
-const URI_BATCH_SIZE = 100;
-const JSON_CONCURRENCY = 30;
+// Multicall3 batch size for tokenURI lookups. Tuned for Monad's
+// public RPC gas limits; larger batches occasionally hit the cap.
+const URI_BATCH_SIZE = 200;
+// Number of URI-batch RPC calls to dispatch concurrently. The RPC
+// pool distributes across its underlying endpoints, so this is
+// effectively "how many endpoints we're hitting in parallel."
+const URI_BATCH_PARALLELISM = 5;
+// Parallel JSON fetches. Higher = faster on healthy hosts but more
+// browser pressure + more in-flight CORS requests for blocked hosts
+// (each one logs a console error).
+const JSON_CONCURRENCY = 60;
+// Number of cached tokenURIs to re-fetch on revisit to detect a
+// reveal / baseURI swap.
 const SAMPLE_SIZE = 3;
+// Bail out of JSON fetching if this many consecutive failures land
+// from the same host - usually CORS-blocked. Lower number = quieter
+// console, slightly less coverage on truly transient failures.
+const JSON_FAILURE_BAIL = 15;
 
 export function useTraitEnumeration(
   contract: string | undefined,
@@ -268,19 +283,36 @@ async function enumerate(params: EnumerateParams): Promise<CachedTraitData | nul
   }
 
   // Step A: Multicall3-batched tokenURI fetches.
-  // Each batch is one RPC round trip returning up to URI_BATCH_SIZE URIs.
+  // Multiple URI batches dispatch concurrently. The RPC pool spreads
+  // them across its endpoints so this scales near-linearly with the
+  // number of healthy nodes.
   const uriByTokenId = new Map<string, string>();
   const sampledForReveal: Array<{ tokenId: string; uri: string }> = [];
 
+  // Build all chunks up front so we can pipeline them.
+  const chunks: bigint[][] = [];
   for (let i = 0; i < tokenIds.length; i += URI_BATCH_SIZE) {
+    chunks.push(tokenIds.slice(i, i + URI_BATCH_SIZE));
+  }
+
+  for (let wave = 0; wave < chunks.length; wave += URI_BATCH_PARALLELISM) {
     if (params.cancelled()) return null;
-    const chunk = tokenIds.slice(i, i + URI_BATCH_SIZE);
-    const calls: MulticallRequest[] = chunk.map((id) =>
-      encodeCall(contractLower as `0x${string}`, TOKEN_URI_ABI, "tokenURI", [id]),
+    const slice = chunks.slice(wave, wave + URI_BATCH_PARALLELISM);
+    const waveResults = await Promise.all(
+      slice.map(async (chunk, chunkIdxInWave) => {
+        const calls: MulticallRequest[] = chunk.map((id) =>
+          encodeCall(contractLower as `0x${string}`, TOKEN_URI_ABI, "tokenURI", [id]),
+        );
+        try {
+          const results = await executeBatchedMulticalls(pool, calls);
+          return { chunk, flat: results.flat(), chunkIdxInWave };
+        } catch {
+          return { chunk, flat: [], chunkIdxInWave };
+        }
+      }),
     );
-    try {
-      const results = await executeBatchedMulticalls(pool, calls);
-      const flat = results.flat();
+    for (const { chunk, flat, chunkIdxInWave } of waveResults) {
+      const absoluteChunkIdx = wave + chunkIdxInWave;
       for (let j = 0; j < chunk.length; j++) {
         const entry = flat[j];
         if (!entry || !entry.success) continue;
@@ -289,29 +321,36 @@ async function enumerate(params: EnumerateParams): Promise<CachedTraitData | nul
           const tokenIdStr = chunk[j].toString();
           uriByTokenId.set(tokenIdStr, uri);
           // Sample the first chunk's first 5 tokens for reveal verification.
-          if (sampledForReveal.length < 5 && i === 0 && j < 5) {
+          if (sampledForReveal.length < 5 && absoluteChunkIdx === 0 && j < 5) {
             sampledForReveal.push({ tokenId: tokenIdStr, uri });
           }
         }
       }
-    } catch {
-      // Continue with the chunks we did get. Missing tokens just
-      // won't be enumerated; UI shows partial data.
     }
   }
 
-  // Step B: parallel JSON fetches for each URI, with concurrency cap.
+  // Step B: parallel JSON fetches for each URI, with concurrency
+  // cap. Tracks consecutive failures from the same host - once we
+  // hit JSON_FAILURE_BAIL in a row, the host is almost certainly
+  // CORS-blocking us and continuing just spams the console for the
+  // rest of the supply. Stop the JSON stage there (we still keep
+  // the URIs we collected and complete enumeration with whatever
+  // partial attributes we got).
   const tokenAttributes: Record<string, TokenAttribute[]> = {};
   const entries = Array.from(uriByTokenId.entries());
   let fetchedCount = 0;
+  let consecutiveFailures = 0;
+  let bailed = false;
 
   for (let i = 0; i < entries.length; i += JSON_CONCURRENCY) {
     if (params.cancelled()) return null;
+    if (bailed) break;
     const wave = entries.slice(i, i + JSON_CONCURRENCY);
     await Promise.all(
       wave.map(async ([tokenIdStr, uri]) => {
         try {
           const meta = await resolveMetadata(uri, BigInt(tokenIdStr));
+          consecutiveFailures = 0;
           if (Array.isArray(meta.attributes) && meta.attributes.length > 0) {
             tokenAttributes[tokenIdStr] = (
               meta.attributes as Array<{ trait_type?: string; value?: unknown }>
@@ -325,12 +364,15 @@ async function enumerate(params: EnumerateParams): Promise<CachedTraitData | nul
               }));
           }
         } catch {
-          // Skip tokens whose JSON failed (CORS, 404, parse error).
+          consecutiveFailures++;
         }
       }),
     );
     fetchedCount += wave.length;
     params.onProgress(Math.min(fetchedCount, totalSupply));
+    if (consecutiveFailures >= JSON_FAILURE_BAIL) {
+      bailed = true;
+    }
   }
 
   // Step C: aggregate counts.

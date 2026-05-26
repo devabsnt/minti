@@ -864,7 +864,6 @@ function TokenDetailPage({
     isEvmfs ? undefined : tokenIdBigInt
   );
   const metadata = isEvmfs ? evmfsMetadata : legacyMetadata;
-  const isLoading = isEvmfs ? !evmfsMetadata && !viewerUri : legacyLoading;
 
   // Image resolution. The order matters because there are two
   // failure modes we have to handle without showing the wrong image:
@@ -929,18 +928,19 @@ function TokenDetailPage({
     >
       <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
         <div className="overflow-hidden border border-border">
-          {isLoading ? (
-            <div className="aspect-square flex items-center justify-center bg-background-secondary">
-              <Spinner size="lg" />
-            </div>
-          ) : isEvmfs && viewerUri ? (
+          {/* The image renders immediately from the synthesized URL
+              when available - no waiting on metadata fetches. EVMFS
+              tokens go through the on-chain viewer iframe instead.
+              The spinner only ever shows for collections where we
+              genuinely have no image source at all. */}
+          {isEvmfs && viewerUri ? (
             <iframe
               src={viewerUri}
               title={metadata?.name || `Token #${tokenId}`}
               sandbox="allow-scripts"
               className="w-full aspect-square border-0 bg-background-secondary"
             />
-          ) : (
+          ) : effectiveImage ? (
             <NftImage
               src={effectiveImage}
               rawUri={
@@ -949,6 +949,10 @@ function TokenDetailPage({
               alt={metadata?.name || `#${tokenId}`}
               className="aspect-square"
             />
+          ) : (
+            <div className="aspect-square flex items-center justify-center bg-background-secondary">
+              <Spinner size="lg" />
+            </div>
           )}
         </div>
 
