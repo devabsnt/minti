@@ -216,25 +216,30 @@ function CollectionPage({
       ? indexerBrowsePages
       : defaultTotalPages;
 
-  // Per-token metadata via Multicall — only used for the legacy
-  // Enumerable fallback (when indexer doesn't have the collection yet)
-  // AND for the EVMFS-trait-filtered path. The indexer-driven path uses
-  // `imageUrlTemplate` substitution in NftCard instead of a per-token
-  // metadata fetch, which is what kills the scatter-502 storm.
+  // Substitute `{id}` in the collection's image URL template for the
+  // browse grid. Computed once per token list change.
+  const imageUrlTemplate = indexerCollection?.imageUrlTemplate ?? null;
+  const sampleImageUrl = indexerCollection?.sampleImageUrl ?? null;
+
+  // Per-token metadata fetch. Two cases skip it:
+  //   1. Filter path (EVMFS) — handled separately via filteredTokenRows
+  //   2. Indexer browse path WITH imageUrlTemplate — substitute the
+  //      tokenId into the template, no fetch needed (the kill switch
+  //      for the scatter-502 storm).
+  // When indexer has tokens but NO template (e.g. Monad Mogs, where
+  // each token's image is at a unique CID), we still need per-token
+  // metadata fetches to get unique images. The shared sampleImageUrl
+  // fallback would be wrong — every card would look the same.
   const usingIndexerBrowse =
     filteredIds === null && (indexerBrowseTokens.length > 0 || indexerBrowseTotal > 0);
-  const batchTokens = usingIndexerBrowse
+  const skipBatchFetch = usingIndexerBrowse && !!imageUrlTemplate;
+  const batchTokens = skipBatchFetch
     ? []
     : browseTokens.map((t) => ({
         contractAddress: collectionAddress,
         tokenId: t.tokenId,
       }));
   const { data: metadataMap } = useBatchNftMetadata(batchTokens);
-
-  // Substitute `{id}` in the collection's image URL template for the
-  // browse grid. Computed once per token list change.
-  const imageUrlTemplate = indexerCollection?.imageUrlTemplate ?? null;
-  const sampleImageUrl = indexerCollection?.sampleImageUrl ?? null;
 
   const {
     tokens: ownedDiscovered,
