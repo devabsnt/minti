@@ -118,13 +118,19 @@ export async function refreshTiers(): Promise<{ updated: number; elapsedMs: numb
         byTier.get(newTier)!.push(r.address);
       }
     }
+    // Chunk the UPDATE so we don't blow past statement-parameter limits
+    // (postgres-js expands ANY(array) into one $param per element). 100
+    // is conservative — well under any Postgres / driver limit, fast.
+    const UPDATE_BATCH = 100;
     for (const [newTier, addrs] of byTier) {
       if (addrs.length === 0) continue;
-      // Drizzle's `inArray` would also work; SQL IN list is fine for hundreds.
-      await db
-        .update(collections)
-        .set({ tier: newTier, updatedAt: sql`now()` })
-        .where(sql`${collections.address} = ANY(${addrs})`);
+      for (let i = 0; i < addrs.length; i += UPDATE_BATCH) {
+        const slice = addrs.slice(i, i + UPDATE_BATCH);
+        await db
+          .update(collections)
+          .set({ tier: newTier, updatedAt: sql`now()` })
+          .where(sql`${collections.address} = ANY(${slice})`);
+      }
       totalUpdated += addrs.length;
     }
     offset += PAGE;

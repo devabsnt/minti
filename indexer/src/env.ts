@@ -50,11 +50,13 @@ const schema = z.object({
     .transform((s) => parseInt(s, 10))
     .refine((n) => n >= 1, "RETENTION_DAYS must be >= 1"),
   // Stats refresh cadence — how often the indexer recomputes
-  // transfer_count / unique_holders / etc. per collection. Default 300s
-  // (5 min). Heavier than poll/prune; don't crank it too low.
+  // transfer_count / unique_holders / etc. per collection. Default 1800s
+  // (30 min). The CTE scans the entire activity + tokens tables, so this
+  // is the heaviest job we run — don't drop it below a few minutes
+  // without an incremental-update story.
   STATS_REFRESH_SECONDS: z
     .string()
-    .default("300")
+    .default("1800")
     .transform((s) => parseInt(s, 10))
     .refine((n) => n >= 30, "STATS_REFRESH_SECONDS must be >= 30"),
   // Tier reclassification cadence. Reads from stats so should run after
