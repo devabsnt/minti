@@ -62,24 +62,31 @@ body::before {
   mix-blend-mode: multiply;
 }
 
-/* Watermark layer. One composited PNG tile (400x400) containing:
-   - the baoling postmark motif (top-left of the tile)
-   - the Monad mark, recolored to match the postmark silhouette
-     (bottom-right of the tile, offset half a tile so the grid
-     alternates between motifs)
-   The combined pattern reads as a quiet stationery watermark when
-   tiled across the page, with comfortable breathing room between
-   each motif. */
+/* Watermark layer. One composited PNG tile (400x400) containing
+   the baoling postmark + the Monad mark in alternating cells.
+   The whole layer is rotated 45 degrees so the motif grid reads
+   diagonally rather than parallel to the page edges - feels more
+   like an etched watermark than a wallpaper.
+
+   The element is oversized (200vmax square, centered on viewport)
+   so the rotation never leaves uncovered corners on the visible
+   area. Opacity tuned very low; the motifs should be barely
+   visible at glance distance, only obvious when you go looking. */
 body::after {
   content: "";
   position: fixed;
-  inset: 0;
+  top: -50vmax;
+  left: -50vmax;
+  width: 200vmax;
+  height: 200vmax;
   pointer-events: none;
   z-index: 0;
   background-image: url("/watermark.png");
   background-repeat: repeat;
   background-size: 400px 400px;
-  opacity: 0.075;
+  transform: rotate(45deg);
+  transform-origin: center center;
+  opacity: 0.04;
   mix-blend-mode: multiply;
 }
 
@@ -141,21 +148,18 @@ body > * {
 }
 
 /* ── Stamp-serrated edges ────────────────────────────────────────
-   Hand-painted perforations along each edge. Four radial-gradient
-   layers, one per edge, each tiling a row of circles that match
-   the surrounding paper color. The circles appear as "bites" out
-   of the card. Looks like a real stamp without needing a heavy SVG
-   border-image dance.
+   Small hand-painted perforations along each edge. Four radial-
+   gradient layers tile rows of circles in the surrounding paper
+   color, creating "bites" out of the card edges. The card retains
+   its bg-background-secondary via background-color underneath, and
+   the bites reveal the body's cream paper through the notches.
 
-   Apply alongside the card's existing bg-background-secondary:
-   the .stamp-edge layer paints ON TOP, with circles that are the
-   same color as the body bg, so the perforations look like the
-   card was cut from a sheet.
-
-   Tunable via --perf-r (circle radius) and --perf-step (pitch). */
+   Perforation sizing: kept small (3px radius, 10px pitch) so the
+   serration reads as detail at normal viewing distance rather than
+   a chunky border decoration. */
 .stamp-edge {
-  --perf-r: 5px;
-  --perf-step: 14px;
+  --perf-r: 3px;
+  --perf-step: 10px;
   background-image:
     radial-gradient(
       circle var(--perf-r) at 50% 0,
@@ -291,43 +295,7 @@ body > * {
   100% { background-position: 200% 50%; }
 }
 
-/* ── Side bamboo ─────────────────────────────────────────────────
-   Simple static bamboo on every non-landing page. One small clump
-   per side, mirrored on the right. No animation. Renders at the
-   bottom corners of the viewport. */
-.side-bamboo {
-  position: fixed;
-  inset: 0;
-  pointer-events: none;
-  z-index: 5;
-}
-.side-bamboo-left,
-.side-bamboo-right {
-  position: absolute;
-  /* Extend slightly below the viewport so the bases of the stalks
-     bleed past the bottom edge instead of being cleanly cut off. */
-  bottom: -4vh;
-  width: clamp(140px, 18vw, 240px);
-}
-.side-bamboo-left svg,
-.side-bamboo-right svg {
-  display: block;
-  width: 100%;
-  height: auto;
-  filter:
-    drop-shadow(0 0 1px rgba(45, 36, 24, 0.30))
-    drop-shadow(3px 5px 0 rgba(45, 36, 24, 0.10))
-    drop-shadow(0 10px 16px rgba(45, 36, 24, 0.12));
-}
-.side-bamboo-left {
-  left: 0;
-}
-.side-bamboo-right {
-  right: 0;
-  transform: scaleX(-1);
-}
-
-/* ── Corner bamboo (landing parallax bushes) ─────────────────────
+/* ── Corner bamboo (page-wide decoration) ───────────────────────
    Two bamboo clumps anchored to the bottom corners of the viewport.
    At rest they lean inward toward page center. As the user scrolls
    down, they translate outward and rotate further from center.
@@ -348,9 +316,11 @@ body > * {
 }
 .corner-bamboo-side {
   position: absolute;
-  /* Extend slightly below the viewport so the bases of the stalks
-     bleed past the bottom edge - looks rooted rather than cropped. */
-  bottom: -4vh;
+  /* Push the bushels noticeably below the viewport so the bases of
+     every stalk are off-screen, and the leaves up top read as
+     "rising into view from outside the frame" rather than planted
+     in the page. */
+  bottom: -15vh;
   height: 60vh;
   max-height: 640px;
   width: 0;
@@ -385,10 +355,45 @@ body > * {
     drop-shadow(3px 4px 0 rgba(45, 36, 24, 0.10))
     drop-shadow(0 10px 16px rgba(45, 36, 24, 0.12));
 }
+
+/* Gentle breeze sway. Each bushel's inner wrapper oscillates
+   slowly around its base, ±1.5deg with a long ease-in-out cycle.
+   Bushels stagger via nth-child animation-delays so they don't all
+   sway in lockstep - reads as natural rather than mechanical.
+   Paused while the user is actively scrolling (the scroll-driven
+   lean transform is plenty of motion on its own). */
+.bamboo-sway {
+  width: 100%;
+  height: 100%;
+  transform-origin: bottom center;
+  animation: bamboo-breeze 7s ease-in-out infinite alternate;
+  will-change: transform;
+}
+@keyframes bamboo-breeze {
+  from { transform: rotate(-1.2deg); }
+  to   { transform: rotate(1.8deg); }
+}
+.corner-bamboo-side .bamboo-bushel:nth-child(1) .bamboo-sway {
+  animation-delay: -0s;
+  animation-duration: 7.3s;
+}
+.corner-bamboo-side .bamboo-bushel:nth-child(2) .bamboo-sway {
+  animation-delay: -2.6s;
+  animation-duration: 8.1s;
+}
+.corner-bamboo-side .bamboo-bushel:nth-child(3) .bamboo-sway {
+  animation-delay: -4.4s;
+  animation-duration: 6.5s;
+}
+.corner-bamboo.bamboo-scrolling .bamboo-sway {
+  animation-play-state: paused;
+}
 @media (prefers-reduced-motion: reduce) {
-  .bamboo-bushel {
+  .bamboo-bushel,
+  .bamboo-sway {
     transition: none;
     transform: none;
+    animation: none;
   }
 }
 

@@ -3,12 +3,10 @@
 import Link from "next/link";
 import Image from "next/image";
 import { Button } from "@/components/ui/Button";
-import { CornerBamboo } from "@/components/layout/CornerBamboo";
 
 export default function HomePage() {
   return (
     <div className="max-w-7xl mx-auto px-4">
-      <CornerBamboo />
       {/* Hero. Title and tagline use the serif family so they ladder
           cleanly with the Nº rank numerals used elsewhere. The cream
           paper backdrop + serif headline reads as "editorial album"
@@ -33,7 +31,7 @@ export default function HomePage() {
         </h1>
 
         <p className="font-serif text-foreground-secondary text-xl max-w-xl mb-10 leading-relaxed">
-          Launch NFT collections that live entirely on chain via EVMFS.
+          Launch NFT collections that live on chain via EVMFS.
           No hosting, no expiry.
         </p>
 

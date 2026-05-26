@@ -5,7 +5,7 @@ import { Web3Provider } from "@/providers/Web3Provider";
 import { SoundProvider } from "@/providers/SoundProvider";
 import { Header } from "@/components/layout/Header";
 import { Footer } from "@/components/layout/Footer";
-import { SideBambooMount } from "@/components/layout/SideBambooMount";
+import { CornerBamboo } from "@/components/layout/CornerBamboo";
 import { ToastProvider } from "@/components/ui/Toast";
 import { ServiceWorkerRegister } from "@/components/ServiceWorkerRegister";
 
@@ -122,7 +122,7 @@ export default function RootLayout({
               <Header />
               <main className="flex-1">{children}</main>
               <Footer />
-              <SideBambooMount />
+              <CornerBamboo />
             </ToastProvider>
           </SoundProvider>
         </Web3Provider>

@@ -26,6 +26,8 @@ export function CornerBamboo() {
   useEffect(() => {
     if (typeof window === "undefined") return;
     let ticking = false;
+    let idleTimer: ReturnType<typeof setTimeout> | null = null;
+
     const update = () => {
       ticking = false;
       const el = ref.current;
@@ -36,14 +38,30 @@ export function CornerBamboo() {
       );
       el.style.setProperty("--bamboo-progress", String(progress));
     };
+
     const onScroll = () => {
+      // Mark as "currently scrolling" so the breeze sway pauses
+      // (the user is providing their own motion, two simultaneous
+      // motions on the same element reads as jittery). Debounce to
+      // 220ms idle before resuming sway.
+      const el = ref.current;
+      if (el) el.classList.add("bamboo-scrolling");
+      if (idleTimer) clearTimeout(idleTimer);
+      idleTimer = setTimeout(() => {
+        if (el) el.classList.remove("bamboo-scrolling");
+      }, 220);
+
       if (ticking) return;
       ticking = true;
       requestAnimationFrame(update);
     };
+
     update();
     window.addEventListener("scroll", onScroll, { passive: true });
-    return () => window.removeEventListener("scroll", onScroll);
+    return () => {
+      window.removeEventListener("scroll", onScroll);
+      if (idleTimer) clearTimeout(idleTimer);
+    };
   }, []);
 
   return (
@@ -82,10 +100,13 @@ interface BushelDef {
   variant: "a" | "b" | "c";
 }
 
+// Insets pushed further outward so the bushels frame the page
+// edges instead of intruding into the central content area. Negative
+// insets mean the bushel base sits past the viewport edge entirely.
 const BUSHELS: BushelDef[] = [
-  { inset: -10, width: 220, leanBase: 22, variant: "a" },
-  { inset: 90, width: 260, leanBase: 14, variant: "b" },
-  { inset: 200, width: 200, leanBase: 18, variant: "c" },
+  { inset: -70, width: 220, leanBase: 22, variant: "a" },
+  { inset: 10, width: 260, leanBase: 14, variant: "b" },
+  { inset: 110, width: 200, leanBase: 18, variant: "c" },
 ];
 
 function BushelSlot({
@@ -114,7 +135,12 @@ function BushelSlot({
         } as CSSProperties
       }
     >
-      <BushelSvg variant={variant} mirror={side === "right"} />
+      {/* Inner sway wrapper: the gentle breeze animation lives on
+          this element so it composes with the outer bushel's
+          scroll-driven lean rather than fighting it. */}
+      <div className="bamboo-sway">
+        <BushelSvg variant={variant} mirror={side === "right"} />
+      </div>
     </div>
   );
 }
