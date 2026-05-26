@@ -435,7 +435,7 @@ function OwnedTab({
             </summary>
             <div className="px-4 pb-4 pt-1">
               <p className="text-xs text-foreground-secondary mb-3">
-                Force a check of a specific contract — useful if Hypersync
+                Force a check of a specific contract. Useful if Hypersync
                 missed something or the collection is new.
               </p>
               <div className="flex gap-2">

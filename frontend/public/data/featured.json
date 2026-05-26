@@ -1,0 +1,8 @@
+{
+  "_README": "Featured collections shown above Trending on /explore. Add an entry to feature a collection. Cards auto-populate from indexer data using the address as the key. Edit, commit, push, Vercel deploys.",
+  "_schema": {
+    "address": "0x... (required, lowercased on read)",
+    "blurb": "One-line editorial caption shown in italic mint above the stats row. Optional but recommended."
+  },
+  "collections": []
+}

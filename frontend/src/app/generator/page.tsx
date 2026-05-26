@@ -4,7 +4,7 @@ import Image from "next/image";
 export const metadata: Metadata = {
   title: "NFT Generator (coming soon)",
   description:
-    "Generative art tool for NFT collections — trait layers, exclusion rules, on-chain RLE rendering, IPFS export.",
+    "Generative art tool for NFT collections. Trait layers, exclusion rules, on-chain RLE rendering, IPFS export.",
 };
 
 export default function GeneratorPage() {
@@ -22,7 +22,7 @@ export default function GeneratorPage() {
 
       <p className="text-foreground-secondary max-w-md mb-4">
         The generative art tool is coming soon. Upload trait layers, configure
-        rules, apply effects, and create collections — with optional on-chain
+        rules, apply effects, and create collections, with optional on-chain
         RLE art storage.
       </p>
 

@@ -4,11 +4,11 @@ import { ExploreClient } from "./client";
 export const metadata: Metadata = {
   title: "Discover collections",
   description:
-    "Browse trending, verified, and long-tail NFT collections on Monad. Real-time activity, holder concentration, and wash-trade signals.",
+    "Browse trending and long-tail NFT collections on Monad. Real-time activity, holder concentration, and wash-trade signals.",
   openGraph: {
     title: "Discover NFT collections on minti.art",
     description:
-      "Trending, verified, and long-tail Monad NFT collections — ranked by genuine activity, not raw volume.",
+      "Trending and long-tail Monad NFT collections, ranked by genuine activity, not raw volume.",
   },
 };
 

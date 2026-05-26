@@ -20,7 +20,7 @@ const geistMono = Geist_Mono({
 export const metadata: Metadata = {
   metadataBase: new URL("https://minti.art"),
   title: {
-    default: "minti.art — fully on-chain NFT marketplace",
+    default: "minti.art - fully on-chain NFT marketplace",
     template: "%s · minti.art",
   },
   description:
@@ -44,7 +44,7 @@ export const metadata: Metadata = {
     type: "website",
     siteName: "minti.art",
     url: "https://minti.art",
-    title: "minti.art — fully on-chain NFT marketplace",
+    title: "minti.art - fully on-chain NFT marketplace",
     description:
       "Launch and trade NFTs stored 100% on chain via EVMFS. Zero backend, fully on-chain order book.",
     images: [
@@ -58,7 +58,7 @@ export const metadata: Metadata = {
   },
   twitter: {
     card: "summary_large_image",
-    title: "minti.art — fully on-chain NFT marketplace",
+    title: "minti.art - fully on-chain NFT marketplace",
     description:
       "Launch and trade NFTs stored 100% on chain via EVMFS. Zero backend.",
     images: ["/mintiMascot.png"],

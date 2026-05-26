@@ -29,7 +29,7 @@ export default function HomePage() {
         </h1>
 
         <p className="text-foreground-secondary text-lg max-w-xl mb-8">
-          Launch NFT collections that live entirely on chain via EVMFS — no
+          Launch NFT collections that live entirely on chain via EVMFS. No
           hosting, no expiry.
         </p>
 
@@ -60,7 +60,7 @@ export default function HomePage() {
           <StepCard
             step="1"
             title="Drop your folder"
-            description="Upload metadata and images. Minti gzips and stores each byte as an Ethereum/Monad event log via EVMFS — no IPFS, no S3, no centralized service."
+            description="Upload metadata and images. Minti gzips and stores each byte as an Ethereum/Monad event log via EVMFS. No IPFS, no S3, no centralized service."
           />
           <StepCard
             step="2"

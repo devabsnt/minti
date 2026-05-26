@@ -170,7 +170,7 @@ export function LaunchClient() {
         <h1 className="text-3xl font-bold mb-2">Launch a collection</h1>
         <p className="text-foreground-secondary text-sm">
           Drop a folder of metadata + images. Minti uploads everything to EVMFS,
-          deploys an immutable ERC-721, and registers your collection — all on{" "}
+          deploys an immutable ERC-721, and registers your collection, all on{" "}
           {chainLabel}. No server, no IPFS, no expiry.
         </p>
       </header>
@@ -319,7 +319,7 @@ export function LaunchClient() {
         <h2 className="text-lg font-semibold">3. Launch</h2>
         <p className="text-xs text-foreground-secondary">
           {signingMode.kind === "private-key"
-            ? "Minti will sign every transaction automatically using the configured key — image batches, metadata batches, three manifest uploads, an ERC-721 deployment, the registry registration, and minting. Don't close this tab."
+            ? "Minti will sign every transaction automatically using the configured key. Image batches, metadata batches, three manifest uploads, an ERC-721 deployment, the registry registration, and minting. Don't close this tab."
             : "You will be asked to sign multiple transactions in your wallet: image batches, metadata batches, three manifest uploads, an ERC-721 deployment, the registry registration, and minting. Don't close this tab."}
         </p>
         <Button disabled={!ready || !!progress} onClick={onLaunch}>

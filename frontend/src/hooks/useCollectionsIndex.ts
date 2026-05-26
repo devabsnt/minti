@@ -467,7 +467,7 @@ export function collectionWarnings(c: IndexedCollection): CollectionWarning[] {
     out.push({
       kind: "airdrop",
       severity: "warn",
-      message: `${Math.round(mr * 100)}% of transfers are mints — likely airdropped, not actively traded`,
+      message: `${Math.round(mr * 100)}% of transfers are mints. Likely airdropped, not actively traded`,
     });
   }
 
@@ -475,7 +475,7 @@ export function collectionWarnings(c: IndexedCollection): CollectionWarning[] {
     out.push({
       kind: "mint-dump",
       severity: "warn",
-      message: "No secondary transfers — every holder received their token directly from the creator",
+      message: "No secondary transfers. Every holder received their token directly from the creator",
     });
   }
 
@@ -492,7 +492,7 @@ export function collectionWarnings(c: IndexedCollection): CollectionWarning[] {
       kind: "operational",
       severity: "info",
       message:
-        "Very high transfer-to-holder ratio — likely a DeFi or utility NFT, not a collectible",
+        "Very high transfer-to-holder ratio. Likely a DeFi or utility NFT, not a collectible",
     });
   }
 

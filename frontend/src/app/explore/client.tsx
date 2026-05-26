@@ -4,22 +4,17 @@ import { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { isAddress } from "viem";
 
-import { CollectionCard } from "@/components/collection/CollectionCard";
 import { NftImage } from "@/components/nft/NftImage";
-import { formatNumber, formatCompact } from "@/lib/format";
 import { NftGrid } from "@/components/nft/NftGrid";
+import { formatNumber, formatCompact } from "@/lib/format";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { useBrowseChain } from "@/providers/ChainProvider";
 import { CHAIN_NAMES } from "@/config/chains";
 import {
-  useRegisteredCollections,
-  REGISTRY_PAGE_SIZE,
-  type RegisteredCollection,
-} from "@/hooks/useRegistry";
-import {
   useIndexerCollections,
   useCollectionSparkline,
+  useIndexerCollection,
   type ApiCollection,
   type SortKey,
 } from "@/hooks/useIndexerCollections";
@@ -27,21 +22,27 @@ import {
   useCollectionsIndex,
   type IndexedCollection,
 } from "@/hooks/useCollectionsIndex";
+import {
+  useFeaturedCollections,
+  type FeaturedCollectionEntry,
+} from "@/hooks/useFeaturedCollections";
 import { useHiddenCollections } from "@/hooks/useHiddenCollections";
 import { useDebounce } from "@/hooks/useDebounce";
-import { isRegistryDeployed } from "@/lib/evmfs";
-import { kindTier } from "@/lib/abi/EVMFSCollectionRegistry";
 
 /**
- * Discover page. Three tiers shown in order:
- *   1. Verified — on-chain registry collections (separate from the
- *      indexer; comes from EVMFSCollectionRegistry contract reads).
- *   2. Trending — top 6 collections from the indexer, sorted by
- *      transfer_count in the retention window.
- *   3. All collections — paginated long-tail from the indexer.
+ * Discover page. Three sections shown in order:
+ *   1. Featured. Editorial picks. Driven by `/public/data/featured.json`
+ *      (curated by the platform team). Cards auto-populate from indexer
+ *      data using the contract address as the key.
+ *   2. Trending. Top 10 explore-eligible collections from the indexer,
+ *      sorted by transfer_count (and a few other anti-gaming signals)
+ *      in the retention window.
+ *   3. All collections. Paginated long-tail from the indexer.
  *
- * Everything below #1 comes from the live indexer API. The previous
- * static-snapshot + client-side dedupe/filter pipeline is gone.
+ * The on-chain registry (EVMFSCollectionRegistry) used to be section 1.
+ * The indexer made it redundant for discovery, and curated/editorial
+ * picks via the JSON file are now the canonical "platform-vouched"
+ * signal.
  */
 export function ExploreClient() {
   const router = useRouter();
@@ -53,9 +54,7 @@ export function ExploreClient() {
   const [showAll, setShowAll] = useState(true);
   const [sortKey, setSortKey] = useState<SortKey>("trending");
   const [longTailPage, setLongTailPage] = useState(0);
-  const [registryPage, setRegistryPage] = useState(0);
   const { browseChainId } = useBrowseChain();
-  const registryLive = isRegistryDeployed(browseChainId);
   const { isHidden } = useHiddenCollections(browseChainId);
 
   const LONG_TAIL_PAGE_SIZE = 48;
@@ -67,41 +66,21 @@ export function ExploreClient() {
   const isSearchingByText = trimmed.length > 0 && !isAddress(trimmed);
   const q = isSearchingByText ? trimmed : undefined;
 
-  // ── Registry tier (on-chain, untouched by the indexer migration) ──
-  const { data: registryData, isLoading: registryLoading } =
-    useRegisteredCollections(registryPage);
-  const registryCollections = useMemo(
-    () => registryData?.collections ?? [],
-    [registryData?.collections],
-  );
-  const totalRegistry = registryData?.total ?? 0;
-  const totalRegistryPages = Math.ceil(totalRegistry / REGISTRY_PAGE_SIZE);
-
-  const rankedRegistry = useMemo<RegisteredCollection[]>(() => {
-    const ranked = rankByTier(registryCollections);
-    if (!isSearchingByText) return ranked;
-    const needle = trimmed.toLowerCase();
-    return ranked.filter(
-      (c) =>
-        c.name.toLowerCase().includes(needle) ||
-        c.symbol.toLowerCase().includes(needle),
-    );
-  }, [registryCollections, isSearchingByText, trimmed]);
-
-  // Address set for dedupe against trending/long-tail tiers.
-  const registryAddresses = useMemo(
-    () =>
-      new Set(registryCollections.map((c) => c.nftContract.toLowerCase())),
-    [registryCollections],
+  // ── Featured collections (editorial picks) ─────────────────────────
+  const { data: featuredEntries } = useFeaturedCollections();
+  const featuredAddresses = useMemo(
+    () => new Set((featuredEntries ?? []).map((e) => e.address.toLowerCase())),
+    [featuredEntries],
   );
 
   // ── Trending hero (top 10 explore-eligible by trending) ───────────
   // Fetching more than 10 because we then filter out:
-  //   - registry-tier collections (shown in the Verified section above)
+  //   - featured collections (shown in the Featured section above, no
+  //     point listing them twice)
   //   - user-hidden collections
   //   - whale-heavy collections per the static snapshot's concentration
-  //     data (same thresholds as the warnings on the collection page —
-  //     top1 > 50% supply, or top10 > 70%). We do this on the client
+  //     data (same thresholds as the warnings on the collection page,
+  //     top1 > 50% supply or top10 > 70%). We do this on the client
   //     because the snapshot has full-history holder data; the indexer's
   //     30-day retention window undercounts long-dormant whales.
   const { data: trendingData } = useIndexerCollections({
@@ -121,11 +100,11 @@ export function ExploreClient() {
   const trendingHero = useMemo(() => {
     const rows = trendingData?.collections ?? [];
     return rows
-      .filter((c) => !registryAddresses.has(c.address.toLowerCase()))
+      .filter((c) => !featuredAddresses.has(c.address.toLowerCase()))
       .filter((c) => !isHidden(c.address))
       .filter((c) => {
         const snap = snapshotByAddress.get(c.address.toLowerCase());
-        if (!snap) return true; // not in snapshot → no data to filter by, allow
+        if (!snap) return true; // not in snapshot, no data to filter by, allow
         if (typeof snap.top1HolderPct === "number" && snap.top1HolderPct > 0.5) {
           return false;
         }
@@ -135,7 +114,7 @@ export function ExploreClient() {
         return true;
       })
       .slice(0, 10);
-  }, [trendingData, registryAddresses, isHidden, snapshotByAddress]);
+  }, [trendingData, featuredAddresses, isHidden, snapshotByAddress]);
 
   // Trend arrows: persist the previous rank-by-address mapping to
   // localStorage so we can show ▲/▼ when a collection moves between
@@ -201,9 +180,9 @@ export function ExploreClient() {
   const longTail = useMemo(() => {
     const rows = longTailData?.collections ?? [];
     return rows
-      .filter((c) => !registryAddresses.has(c.address.toLowerCase()))
+      .filter((c) => !featuredAddresses.has(c.address.toLowerCase()))
       .filter((c) => !isHidden(c.address));
-  }, [longTailData, registryAddresses, isHidden]);
+  }, [longTailData, featuredAddresses, isHidden]);
   const longTailTotal = longTailData?.pagination.total ?? 0;
   const longTailTotalPages = Math.ceil(longTailTotal / LONG_TAIL_PAGE_SIZE);
 
@@ -223,9 +202,6 @@ export function ExploreClient() {
           <h1 className="text-2xl font-bold">Discover</h1>
           <p className="text-sm text-foreground-secondary mt-1">
             Collections on {CHAIN_NAMES[browseChainId] || "Unknown Chain"}
-            {totalRegistry > 0 && (
-              <span className="ml-1">· {totalRegistry} verified</span>
-            )}
             {longTailTotal > 0 && (
               <span className="ml-1">
                 · {formatNumber(longTailTotal)} active
@@ -247,60 +223,28 @@ export function ExploreClient() {
       </div>
 
       <div className="space-y-10">
-        {/* ── Verified tier ─────────────────────────────────────── */}
-        {registryLive ? (
+        {/* Featured tier. Editorial picks from `/public/data/featured.json`.
+            Each card auto-populates from indexer data using the contract
+            address as the key. */}
+        {featuredEntries && featuredEntries.length > 0 && (
           <section>
-            <h2 className="text-sm font-medium uppercase tracking-wide text-foreground-secondary mb-3">
-              Verified
-              {rankedRegistry.length > 0 && (
-                <span className="ml-2 text-xs">{rankedRegistry.length}</span>
-              )}
-            </h2>
-            <NftGrid
-              loading={registryLoading}
-              empty={!registryLoading && rankedRegistry.length === 0}
-              emptyMessage={
-                isSearchingByText
-                  ? "No verified collections match."
-                  : "No verified collections yet on this chain."
-              }
-            >
-              {rankedRegistry.map((c) => (
-                <CollectionCard key={c.id} collection={c} />
-              ))}
-            </NftGrid>
-
-            {!isSearchingByText && totalRegistryPages > 1 && (
-              <div className="flex items-center justify-center gap-3 mt-6">
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  disabled={registryPage === 0}
-                  onClick={() => setRegistryPage((p) => p - 1)}
-                >
-                  Previous
-                </Button>
-                <span className="text-sm text-foreground-secondary">
-                  Page {registryPage + 1} of {totalRegistryPages}
+            <div className="flex items-baseline justify-between mb-3">
+              <h2 className="text-sm font-medium uppercase tracking-wide text-foreground-secondary">
+                Featured
+                <span className="ml-2 text-xs text-foreground-secondary/70">
+                  minti picks
                 </span>
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  disabled={registryPage >= totalRegistryPages - 1}
-                  onClick={() => setRegistryPage((p) => p + 1)}
-                >
-                  Next
-                </Button>
-              </div>
-            )}
+              </h2>
+            </div>
+            <div className="space-y-3">
+              {featuredEntries.map((entry) => (
+                <FeaturedCard key={entry.address} entry={entry} />
+              ))}
+            </div>
           </section>
-        ) : (
-          <div className="text-xs text-foreground-secondary border border-border rounded-lg bg-background-secondary px-3 py-2">
-            Registry not deployed on {CHAIN_NAMES[browseChainId]} yet — verified collections will appear here once it is.
-          </div>
         )}
 
-        {/* ── Trending hero ────────────────────────────────────── */}
+        {/* Trending hero. */}
         {trendingHero.length > 0 && (
           <section>
             <div className="flex items-baseline justify-between mb-3">
@@ -434,18 +378,113 @@ export function ExploreClient() {
   );
 }
 
-/** EVMFS-first / data: URI second / off-chain last, then verified-first. */
-function rankByTier(items: readonly RegisteredCollection[]): RegisteredCollection[] {
-  return [...items].sort((a, b) => {
-    const tierDiff = kindTier(a.kind) - kindTier(b.kind);
-    if (tierDiff !== 0) return tierDiff;
-    if (a.verified !== b.verified) return a.verified ? -1 : 1;
-    return a.id - b.id;
-  });
+/**
+ * Featured collection card. Editorial pick, full-width, distinct from
+ * the trending podium's metallic finish. Three signals tell the viewer
+ * this is platform-curated:
+ *   1. The minti mascot watermark in the top-right
+ *   2. A "FEATURED" pill alongside the mascot
+ *   3. An italic mint editorial blurb above the stats row
+ *
+ * The card auto-populates from indexer data (name, symbol, sample image,
+ * stats) using `entry.address` as the key. Curators only have to commit
+ * an entry to `/public/data/featured.json`.
+ */
+function FeaturedCard({ entry }: { entry: FeaturedCollectionEntry }) {
+  const { data: collData } = useIndexerCollection(entry.address);
+  const collection = collData?.collection;
+  if (!collection) {
+    // Indexer hasn't seen this contract yet (newly deployed). Render a
+    // minimal placeholder so the slot doesn't pop in later.
+    return (
+      <div className="block border border-mint/30 overflow-hidden bg-background-secondary p-4">
+        <div className="text-sm text-foreground-secondary">
+          {entry.address.slice(0, 8)}... awaiting indexer discovery
+        </div>
+      </div>
+    );
+  }
+
+  const name = collection.name || collection.address.slice(0, 10);
+  const symbol = collection.symbol || "";
+  const transferCount = collection.transferCount ?? 0;
+  const uniqueHolders = collection.uniqueHolders ?? 0;
+  const supply = collection.totalSupply ? Number(collection.totalSupply) : 0;
+  const blurb = entry.blurb?.trim();
+
+  return (
+    <a
+      href={`/collection/${collection.address}`}
+      className="group relative block border border-mint/30 overflow-hidden bg-background-secondary hover:border-mint/60 hover:shadow-lg hover:shadow-mint-glow transition-all"
+    >
+      <div className="relative flex gap-4 p-4 items-start">
+        {/* Mascot + FEATURED label in the top-right. */}
+        <div
+          className="absolute top-2 right-3 flex items-center gap-1.5 z-10"
+          aria-hidden
+        >
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src="/mintiMascot.png"
+            alt=""
+            className="w-6 h-6 opacity-70"
+            loading="lazy"
+          />
+          <span className="text-[10px] font-bold tracking-widest text-mint px-2 py-0.5 bg-mint/10 border border-mint/30">
+            FEATURED
+          </span>
+        </div>
+
+        <div className="w-28 h-28 sm:w-32 sm:h-32 overflow-hidden border border-border bg-background-tertiary flex-shrink-0">
+          <NftImage
+            src={collection.sampleImageUrl ?? ""}
+            alt={name}
+            className="w-full h-full"
+          />
+        </div>
+        <div className="flex-1 min-w-0 flex flex-col gap-1 pr-4 sm:pr-0">
+          <div className="text-xl sm:text-2xl font-bold truncate">{name}</div>
+          {symbol && (
+            <div className="text-sm text-foreground-secondary truncate">
+              {symbol}
+            </div>
+          )}
+          {blurb && (
+            <p className="text-sm italic text-mint/90 truncate mt-1">
+              {blurb}
+            </p>
+          )}
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-1 mt-2 text-sm">
+            <span>
+              <span className="text-mint font-medium">
+                {formatCompact(transferCount)}
+              </span>
+              <span className="text-foreground-secondary ml-1">transfers</span>
+            </span>
+            <span>
+              <span className="text-mint font-medium">
+                {formatNumber(uniqueHolders)}
+              </span>
+              <span className="text-foreground-secondary ml-1">holders</span>
+            </span>
+            {supply > 0 && (
+              <span>
+                <span className="text-mint font-medium">
+                  {formatNumber(supply)}
+                </span>
+                <span className="text-foreground-secondary ml-1">items</span>
+              </span>
+            )}
+            <FloorPrice contractAddress={collection.address} />
+          </div>
+        </div>
+      </div>
+    </a>
+  );
 }
 
 /**
- * Long-tail collection card. Reads everything from the API row — no
+ * Long-tail collection card. Reads everything from the API row, no
  * runtime tokenURI fetches, no IPFS gateway race. The indexer's
  * enrichment pass populated `sampleImageUrl` already.
  */

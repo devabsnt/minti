@@ -179,7 +179,7 @@ export function GlobalSearch() {
           onChange={(e) => setValue(e.target.value)}
           onFocus={() => setFocused(true)}
           onKeyDown={onKey}
-          placeholder="Search by name or 0x address — press /"
+          placeholder="Search by name or 0x address. Press /"
           aria-label="Search collections"
           aria-autocomplete="list"
           aria-expanded={open}

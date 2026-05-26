@@ -96,7 +96,7 @@ export function SigningModeSelector({ value, onChange, connectedAddress }: Props
           <p className="text-xs text-foreground-secondary leading-relaxed">
             Your private key stays in your browser and is never sent to any
             server. It&apos;s only used locally to sign transactions, and is
-            discarded when you close or refresh this page. Even so — for safety,
+            discarded when you close or refresh this page. Even so, for safety,
             create a new wallet specifically for this launch. Transfer only the
             funds needed, then discard the key. <strong>Never paste a key from
             a wallet that holds significant funds.</strong>
