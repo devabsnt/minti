@@ -1,4 +1,4 @@
-import { eq, inArray, or, sql } from "drizzle-orm";
+import { asc, eq, inArray, or, sql } from "drizzle-orm";
 import { db } from "../db/client.js";
 import { collections } from "../db/schema.js";
 import { env } from "../env.js";
@@ -89,6 +89,9 @@ export async function refreshTiers(): Promise<{ updated: number; elapsedMs: numb
   let t0 = 0, t1 = 0, t2 = 0;
 
   while (true) {
+    // ORDER BY required: without it Postgres can return different
+    // orderings across calls and `LIMIT … OFFSET …` will skip rows.
+    // veDUST was getting skipped on every pass for exactly this reason.
     const rows = await db
       .select({
         address: collections.address,
@@ -105,6 +108,7 @@ export async function refreshTiers(): Promise<{ updated: number; elapsedMs: numb
         currentTier: collections.tier,
       })
       .from(collections)
+      .orderBy(asc(collections.address))
       .limit(PAGE)
       .offset(offset);
     if (rows.length === 0) break;

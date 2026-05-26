@@ -1,13 +1,16 @@
-// Public IPFS gateways. The browser races these in parallel for metadata
-// JSON and steps through them on <img> error for images. All three send
-// CORS headers and serve content-addressed data, so any working one is
-// equivalent. The Cloudflare worker proxy is no longer in the path —
-// indexer-side template substitution covers the cases that used to need
-// CORS-proxying for centralized hosts (scatter, lootgo, R2, etc.).
+// Public IPFS gateways. Browser races these in parallel for metadata
+// JSON and steps through them on <img>-error for images. All send CORS
+// headers and content-addressed data, so any working one is equivalent.
+//
+// Order matters: `IPFS_GATEWAYS[0]` is the default rendering gateway.
+// `w3s.link` first because `ipfs.io` is bad about returning proper MIME
+// types for binary files (.webp, .avif, etc.) — Chrome's ORB blocks
+// those responses with ERR_BLOCKED_BY_ORB. `w3s.link` sets correct
+// `Content-Type` headers and renders cleanly.
 export const IPFS_GATEWAYS = [
-  "https://ipfs.io/ipfs/",
   "https://w3s.link/ipfs/",
   "https://4everland.io/ipfs/",
+  "https://ipfs.io/ipfs/",
 ];
 
 export const PAGE_SIZE = 20;

@@ -191,12 +191,22 @@ function CollectionPage({
   const indexerTotalSupply = indexerCollection?.totalSupply
     ? Number(indexerCollection.totalSupply)
     : 0;
+  // Legacy Enumerable-contract reader. Only run it when the indexer
+  // genuinely has no tokens AND we're not on the filter path. Otherwise
+  // it fires its own tokenURI + per-token JSON fetches in parallel that
+  // we never use — the "cancelled JSON requests" that were slowing down
+  // CrazyOctogon-style large collections.
+  const indexerHasTokens = indexerBrowseTokens.length > 0 || indexerBrowseTotal > 0;
+  const fallbackEnabled = filteredIds === null && !indexerHasTokens;
   const {
     tokens: defaultBrowseTokens,
     totalSupply: contractTotalSupply,
     totalPages: defaultTotalPages,
     isLoading: defaultBrowseLoading,
-  } = useCollectionTokens(collectionAddress, filteredIds !== null ? 0 : browsePage);
+  } = useCollectionTokens(
+    fallbackEnabled ? collectionAddress : undefined,
+    filteredIds !== null ? 0 : browsePage,
+  );
   const totalSupply = indexerTotalSupply || contractTotalSupply;
 
   // Source preference: filtered (EVMFS trait filter) > indexer > legacy

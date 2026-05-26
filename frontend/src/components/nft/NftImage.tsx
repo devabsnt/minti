@@ -57,24 +57,60 @@ function detectMediaKind(url: string): MediaKind {
 }
 
 /**
- * Rewrite a URL to a browser-loadable form. The browser handles
- * cross-origin media display fine without a proxy; we only touch
- * schemes the browser can't natively load:
+ * Rewrite a URL to a browser-loadable form, normalizing IPFS-shaped URLs
+ * to our preferred gateway (`IPFS_GATEWAYS[0]`).
+ *
+ * Why we rewrite already-gatewayed URLs:
+ *   `ipfs.io` (which the indexer used as default when it stored
+ *   sample_image_url / image_url_template) frequently returns binary
+ *   files with `Content-Type: application/octet-stream` instead of the
+ *   correct image MIME. Chrome's Opaque Response Blocking (ORB) then
+ *   refuses to deliver those responses to `<img>` tags, throwing
+ *   ERR_BLOCKED_BY_ORB. `w3s.link` (and others) send proper MIME types
+ *   and don't trigger ORB. We extract the CID + path from any IPFS
+ *   gateway URL and re-host through our preferred gateway.
+ *
+ * Schemes handled:
  *   - data: / blob: → unchanged
- *   - ipfs:// → public gateway
+ *   - ipfs:// → preferred gateway
  *   - ar:// → arweave.net
+ *   - subdomain-style `<cid>.ipfs.<host>/<path>` → preferred gateway
+ *   - path-style `<host>/ipfs/<cid>/<path>` → preferred gateway
  *   - everything else → unchanged
  */
+const CID_RE = /(Qm[1-9A-HJ-NP-Za-km-z]{44}|baf[a-z2-7]{52,})/i;
+
+function looksLikeCid(s: string | undefined): boolean {
+  return !!s && new RegExp(`^${CID_RE.source}$`, "i").test(s);
+}
+
 function rewriteIpfsUrl(url: string): string {
   if (!url) return url;
   if (url.startsWith("data:") || url.startsWith("blob:")) return url;
+
+  const preferred = IPFS_GATEWAYS[0];
+
   if (url.startsWith("ipfs://") || url.startsWith("ipfs:/")) {
     const stripped = url.replace(/^ipfs:\/{1,2}/i, "");
-    return `${IPFS_GATEWAYS[0]}${stripped}`;
+    return `${preferred}${stripped}`;
   }
+
   if (url.startsWith("ar://")) {
     return "https://arweave.net/" + url.slice("ar://".length);
   }
+
+  // Subdomain-style gateway: https://<cid>.ipfs.<host>/<path>
+  const sub = url.match(/^https?:\/\/([^./]+)\.ipfs\.[^/]+(\/.*)?$/i);
+  if (sub && looksLikeCid(sub[1])) {
+    return `${preferred}${sub[1]}${sub[2] ?? ""}`;
+  }
+
+  // Path-style gateway: https://<host>/ipfs/<cid>/<path>
+  const pth = url.match(/^https?:\/\/[^/]+\/ipfs\/([^/?#]+)(\/[^?#]*)?(\?[^#]*)?$/i);
+  if (pth && looksLikeCid(pth[1])) {
+    return `${preferred}${pth[1]}${pth[2] ?? ""}${pth[3] ?? ""}`;
+  }
+
   return url;
 }
 
