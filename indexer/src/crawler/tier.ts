@@ -1,4 +1,4 @@
-import { eq, or, sql } from "drizzle-orm";
+import { eq, inArray, or, sql } from "drizzle-orm";
 import { db } from "../db/client.js";
 import { collections } from "../db/schema.js";
 import { env } from "../env.js";
@@ -118,10 +118,11 @@ export async function refreshTiers(): Promise<{ updated: number; elapsedMs: numb
         byTier.get(newTier)!.push(r.address);
       }
     }
-    // Chunk the UPDATE so we don't blow past statement-parameter limits
-    // (postgres-js expands ANY(array) into one $param per element). 100
-    // is conservative — well under any Postgres / driver limit, fast.
-    const UPDATE_BATCH = 100;
+    // Small batches + Drizzle's inArray (compiles to `IN (...)`) keeps
+    // individual UPDATEs fast and lock-friendly. The previous ANY(array)
+    // form had postgres-js expand into one $param per element AND was
+    // sometimes timing out under concurrent stats/poll contention.
+    const UPDATE_BATCH = 50;
     for (const [newTier, addrs] of byTier) {
       if (addrs.length === 0) continue;
       for (let i = 0; i < addrs.length; i += UPDATE_BATCH) {
@@ -129,7 +130,7 @@ export async function refreshTiers(): Promise<{ updated: number; elapsedMs: numb
         await db
           .update(collections)
           .set({ tier: newTier, updatedAt: sql`now()` })
-          .where(sql`${collections.address} = ANY(${slice})`);
+          .where(inArray(collections.address, slice));
       }
       totalUpdated += addrs.length;
     }
@@ -137,6 +138,18 @@ export async function refreshTiers(): Promise<{ updated: number; elapsedMs: numb
   }
 
   return { updated: totalUpdated, elapsedMs: Date.now() - t, tier0: t0, tier1: t1, tier2: t2 };
+}
+
+function describePgError(err: unknown): string {
+  if (!(err instanceof Error)) return String(err);
+  const e = err as Error & { code?: string; detail?: string; severity?: string; routine?: string };
+  const parts: string[] = [];
+  if (e.code) parts.push(`code=${e.code}`);
+  if (e.severity) parts.push(`severity=${e.severity}`);
+  if (e.routine) parts.push(`routine=${e.routine}`);
+  if (e.detail) parts.push(`detail=${e.detail}`);
+  parts.push(e.message);
+  return parts.join(" | ");
 }
 
 export async function startTierLoop(): Promise<void> {
@@ -150,7 +163,7 @@ export async function startTierLoop(): Promise<void> {
       const r = await refreshTiers();
       console.log(`[tier] reclassified ${r.updated} (T0=${r.tier0} T1=${r.tier1} T2=${r.tier2}) in ${r.elapsedMs}ms`);
     } catch (err) {
-      console.error(`[tier] refresh failed: ${err instanceof Error ? err.message : err}`);
+      console.error(`[tier] refresh failed: ${describePgError(err)}`);
     }
     await sleep(intervalMs);
   }
