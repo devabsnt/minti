@@ -209,39 +209,69 @@ function CollectionPage({
   );
   const totalSupply = indexerTotalSupply || contractTotalSupply;
 
-  // Source preference: filtered (EVMFS trait filter) > indexer > legacy
-  // Enumerable fallback (only kicks in if indexer somehow has zero tokens
-  // for this collection, e.g. it was just discovered).
-  const browseTokens = filteredIds !== null
-    ? filteredTokenRows
-    : indexerBrowseTokens.length > 0 || indexerBrowseTotal > 0
-      ? indexerBrowseTokens
-      : defaultBrowseTokens;
-  const browseLoading = filteredIds !== null
-    ? filteredLoading
-    : indexerBrowseLoading || (indexerBrowseTotal === 0 && defaultBrowseLoading);
-  const browseTotalPages = filteredIds !== null
-    ? Math.max(1, Math.ceil(filteredIds.length / filterPageSize))
-    : indexerBrowseTotal > 0
-      ? indexerBrowsePages
-      : defaultTotalPages;
-
-  // Substitute `{id}` in the collection's image URL template for the
-  // browse grid. Computed once per token list change.
   const imageUrlTemplate = indexerCollection?.imageUrlTemplate ?? null;
   const sampleImageUrl = indexerCollection?.sampleImageUrl ?? null;
 
-  // Per-token metadata fetch. Two cases skip it:
-  //   1. Filter path (EVMFS) — handled separately via filteredTokenRows
-  //   2. Indexer browse path WITH imageUrlTemplate — substitute the
-  //      tokenId into the template, no fetch needed (the kill switch
-  //      for the scatter-502 storm).
-  // When indexer has tokens but NO template (e.g. Monad Mogs, where
-  // each token's image is at a unique CID), we still need per-token
-  // metadata fetches to get unique images. The shared sampleImageUrl
-  // fallback would be wrong — every card would look the same.
+  // Synthetic browse — when we have a template AND a totalSupply, we
+  // don't need to wait for individual tokens to transfer before
+  // rendering them. Generate IDs sequentially starting at the lowest
+  // known token ID (typically 0 or 1) up to totalSupply, then plug
+  // each into the template. This is what fixes the "skrumpeys starts
+  // at 59" issue — those low-numbered tokens hadn't transferred in
+  // the 60-day window so they're absent from the indexer's tokens
+  // table, but their images exist at the predictable URL.
+  const tokenIdStart =
+    indexerBrowseTokens.length > 0 && indexerBrowseTokens[0].tokenId === 0n ? 0 : 1;
+  const canUseSyntheticBrowse =
+    filteredIds === null && !!imageUrlTemplate && totalSupply > 0;
+  const syntheticBrowseTokens = useMemo(() => {
+    if (!canUseSyntheticBrowse) return [] as { tokenId: bigint; owner: string }[];
+    const offset = browsePage * indexerPageSize;
+    const start = tokenIdStart + offset;
+    const last = tokenIdStart + totalSupply - 1;
+    const end = Math.min(start + indexerPageSize - 1, last);
+    const out: { tokenId: bigint; owner: string }[] = [];
+    for (let i = start; i <= end; i++) {
+      out.push({
+        tokenId: BigInt(i),
+        owner: "0x0000000000000000000000000000000000000000",
+      });
+    }
+    return out;
+  }, [canUseSyntheticBrowse, browsePage, indexerPageSize, totalSupply, tokenIdStart]);
+  const syntheticTotalPages = canUseSyntheticBrowse
+    ? Math.max(1, Math.ceil(totalSupply / indexerPageSize))
+    : 0;
+
+  // Source preference: filter > synthetic (template+supply) > indexer
+  // transferred-tokens > legacy Enumerable fallback.
+  const browseTokens = filteredIds !== null
+    ? filteredTokenRows
+    : canUseSyntheticBrowse
+      ? syntheticBrowseTokens
+      : indexerBrowseTokens.length > 0 || indexerBrowseTotal > 0
+        ? indexerBrowseTokens
+        : defaultBrowseTokens;
+  const browseLoading = filteredIds !== null
+    ? filteredLoading
+    : canUseSyntheticBrowse
+      ? false
+      : indexerBrowseLoading || (indexerBrowseTotal === 0 && defaultBrowseLoading);
+  const browseTotalPages = filteredIds !== null
+    ? Math.max(1, Math.ceil(filteredIds.length / filterPageSize))
+    : canUseSyntheticBrowse
+      ? syntheticTotalPages
+      : indexerBrowseTotal > 0
+        ? indexerBrowsePages
+        : defaultTotalPages;
+
+  // Per-token metadata fetch. Skipped when we have a template (synthetic
+  // or indexer-listed) since we can build the image URL directly. Kept
+  // when indexer lists tokens with no template (e.g. Monad Mogs, where
+  // each token's image is at a unique CID), so we don't show the same
+  // sample image on every card.
   const usingIndexerBrowse =
-    filteredIds === null && (indexerBrowseTokens.length > 0 || indexerBrowseTotal > 0);
+    filteredIds === null && (canUseSyntheticBrowse || indexerHasTokens);
   const skipBatchFetch = usingIndexerBrowse && !!imageUrlTemplate;
   const batchTokens = skipBatchFetch
     ? []

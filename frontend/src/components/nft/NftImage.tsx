@@ -84,34 +84,50 @@ function looksLikeCid(s: string | undefined): boolean {
   return !!s && new RegExp(`^${CID_RE.source}$`, "i").test(s);
 }
 
+/**
+ * Use the URL the collection actually gave us. Only convert what the
+ * browser literally can't load natively:
+ *   - data: / blob: → unchanged
+ *   - ipfs:// → public gateway (browser doesn't speak ipfs scheme)
+ *   - ar:// → arweave.net (browser doesn't speak arweave scheme)
+ *   - anything https → unchanged, including IPFS gateway URLs the
+ *     collection chose. If it fails, the onError handler steps to the
+ *     next gateway in our list using the extracted CID.
+ *
+ * Adds a `?filename=foo.ext` hint when the URL is `ipfs.io` AND the
+ * extension is one Chrome's ORB blocks (webp/avif/svg/mp4/etc). The
+ * hint tells ipfs.io to serve with the correct Content-Type. Doesn't
+ * change behavior for any other host.
+ */
+function maybeAddFilenameHint(url: string): string {
+  if (!url.startsWith("https://ipfs.io/")) return url;
+  if (/[?&]filename=/i.test(url)) return url;
+  const m = url.match(/\.([a-z0-9]+)(?:\?|#|$)/i);
+  if (!m || !m[1]) return url;
+  const ext = m[1].toLowerCase();
+  // Only formats ORB is known to block on ipfs.io.
+  if (!/^(webp|avif|svg|mp4|webm|mov|m4v|mp3|wav|ogg|opus|html|htm)$/i.test(ext)) {
+    return url;
+  }
+  const sep = url.includes("?") ? "&" : "?";
+  return `${url}${sep}filename=media.${ext}`;
+}
+
 function rewriteIpfsUrl(url: string): string {
   if (!url) return url;
   if (url.startsWith("data:") || url.startsWith("blob:")) return url;
 
-  const preferred = IPFS_GATEWAYS[0];
-
   if (url.startsWith("ipfs://") || url.startsWith("ipfs:/")) {
     const stripped = url.replace(/^ipfs:\/{1,2}/i, "");
-    return `${preferred}${stripped}`;
+    return maybeAddFilenameHint(`${IPFS_GATEWAYS[0]}${stripped}`);
   }
-
   if (url.startsWith("ar://")) {
     return "https://arweave.net/" + url.slice("ar://".length);
   }
 
-  // Subdomain-style gateway: https://<cid>.ipfs.<host>/<path>
-  const sub = url.match(/^https?:\/\/([^./]+)\.ipfs\.[^/]+(\/.*)?$/i);
-  if (sub && looksLikeCid(sub[1])) {
-    return `${preferred}${sub[1]}${sub[2] ?? ""}`;
-  }
-
-  // Path-style gateway: https://<host>/ipfs/<cid>/<path>
-  const pth = url.match(/^https?:\/\/[^/]+\/ipfs\/([^/?#]+)(\/[^?#]*)?(\?[^#]*)?$/i);
-  if (pth && looksLikeCid(pth[1])) {
-    return `${preferred}${pth[1]}${pth[2] ?? ""}${pth[3] ?? ""}`;
-  }
-
-  return url;
+  // For existing https URLs: pass through, but add the filename hint
+  // when ipfs.io is the host and the file type is ORB-prone.
+  return maybeAddFilenameHint(url);
 }
 
 export function NftImage({
