@@ -249,7 +249,7 @@ export function ExploreClient() {
           <section>
             <div className="flex items-baseline justify-between mb-3">
               <h2 className="text-sm font-medium uppercase tracking-wide text-foreground-secondary">
-                <span className="text-mint">●</span> Trending
+                Trending
                 <span className="ml-2 text-xs text-foreground-secondary/70">
                   most active
                 </span>
