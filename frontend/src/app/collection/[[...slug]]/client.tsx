@@ -212,18 +212,17 @@ function CollectionPage({
   const imageUrlTemplate = indexerCollection?.imageUrlTemplate ?? null;
   const sampleImageUrl = indexerCollection?.sampleImageUrl ?? null;
 
-  // Synthetic browse — when we have a template AND a totalSupply, we
-  // don't need to wait for individual tokens to transfer before
-  // rendering them. Generate IDs sequentially starting at the lowest
-  // known token ID (typically 0 or 1) up to totalSupply, then plug
-  // each into the template. This is what fixes the "skrumpeys starts
-  // at 59" issue — those low-numbered tokens hadn't transferred in
-  // the 60-day window so they're absent from the indexer's tokens
-  // table, but their images exist at the predictable URL.
+  // Synthetic browse — once we know totalSupply we don't need to wait
+  // for individual tokens to transfer before rendering them. Generate
+  // IDs sequentially starting at the lowest known token ID (typically
+  // 0 or 1) up to totalSupply. If a `imageUrlTemplate` is known we
+  // build the image URL directly; otherwise the per-token metadata
+  // hook below resolves each tokenURI on demand. Either way the grid
+  // displays tokens in chain order (1, 2, 3 …) instead of in the
+  // order they happened to transfer within the indexer's window.
   const tokenIdStart =
     indexerBrowseTokens.length > 0 && indexerBrowseTokens[0].tokenId === 0n ? 0 : 1;
-  const canUseSyntheticBrowse =
-    filteredIds === null && !!imageUrlTemplate && totalSupply > 0;
+  const canUseSyntheticBrowse = filteredIds === null && totalSupply > 0;
   const syntheticBrowseTokens = useMemo(() => {
     if (!canUseSyntheticBrowse) return [] as { tokenId: bigint; owner: string }[];
     const offset = browsePage * indexerPageSize;
