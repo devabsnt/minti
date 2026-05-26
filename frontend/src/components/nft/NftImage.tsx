@@ -14,6 +14,15 @@ interface NftImageProps {
    * to get higher fetch priority and eager loading. Defaults to lazy.
    */
   priority?: boolean;
+  /**
+   * Called after the gateway ladder is exhausted (or the watchdog
+   * timeout fires) with no successful load. Parent components can use
+   * this to trigger a per-token metadata fetch as a last-resort
+   * fallback — covers the case where a collection's image-URL template
+   * has a single extension baked in (`.png`) but some tokens are
+   * actually a different format (`.gif`, `.mp4`).
+   */
+  onAllFailed?: () => void;
 }
 
 /**
@@ -136,6 +145,7 @@ export function NftImage({
   alt,
   className = "",
   priority = false,
+  onAllFailed,
 }: NftImageProps) {
   const [gatewayIdx, setGatewayIdx] = useState(0);
   const [allFailed, setAllFailed] = useState(false);
@@ -156,7 +166,8 @@ export function NftImage({
       }
     }
     setAllFailed(true);
-  }, [ipfsUri, gatewayIdx]);
+    onAllFailed?.();
+  }, [ipfsUri, gatewayIdx, onAllFailed]);
 
   // Cold path: use the URL as given (after ipfs:// → public gateway
   // rewriting). On error step gatewayIdx forward and resolve to the
