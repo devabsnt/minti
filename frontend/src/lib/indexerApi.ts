@@ -63,6 +63,8 @@ export interface ApiCollection {
   mintCount: number;
   uniqueHolders: number;
   uniqueSenders: number;
+  top1HolderPct: number;
+  top10HolderPct: number;
   createdAt: string; // ISO date string
   updatedAt: string;
 }

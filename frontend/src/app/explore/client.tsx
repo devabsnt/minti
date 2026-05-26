@@ -86,11 +86,13 @@ export function ExploreClient() {
     [registryCollections],
   );
 
-  // ── Trending hero (top 6 explore-eligible by trending) ────────────
+  // ── Trending hero (top 10 explore-eligible by trending) ───────────
+  // Fetching more than 10 because registry/hidden filters can remove a
+  // few rows; we slice down to 10 after filtering.
   const { data: trendingData } = useIndexerCollections({
     tier: 2,
     sort: "trending",
-    limit: 6,
+    limit: 18,
     q,
   });
   const trendingHero = useMemo(() => {
@@ -98,7 +100,7 @@ export function ExploreClient() {
     return rows
       .filter((c) => !registryAddresses.has(c.address.toLowerCase()))
       .filter((c) => !isHidden(c.address))
-      .slice(0, 6);
+      .slice(0, 10);
   }, [trendingData, registryAddresses, isHidden]);
 
   // ── Long-tail / all collections (paginated) ───────────────────────
@@ -224,15 +226,29 @@ export function ExploreClient() {
                 </span>
               </h2>
             </div>
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-              {trendingHero.map((collection, idx) => (
-                <TrendingHeroCard
+            {/* Podium for ranks 1-3 — full-width stacked cards with
+                gold/silver/bronze borders and a dimmed collage. */}
+            <div className="space-y-3 mb-3">
+              {trendingHero.slice(0, 3).map((collection, idx) => (
+                <TrendingPodiumCard
                   key={collection.address}
-                  rank={idx + 1}
+                  rank={(idx + 1) as 1 | 2 | 3}
                   collection={collection}
                 />
               ))}
             </div>
+            {/* Ranks 4-10 in the existing compact-row layout. */}
+            {trendingHero.length > 3 && (
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                {trendingHero.slice(3).map((collection, idx) => (
+                  <TrendingHeroCard
+                    key={collection.address}
+                    rank={idx + 4}
+                    collection={collection}
+                  />
+                ))}
+              </div>
+            )}
           </section>
         )}
 
@@ -385,6 +401,150 @@ function LongTailCard({ collection }: { collection: ApiCollection }) {
             {formatNumber(collection.totalSupply)} items
           </div>
         )}
+      </div>
+    </a>
+  );
+}
+
+/**
+ * Build a list of image URLs to use as the collage background of a
+ * podium card. Picks `count` evenly-spaced token IDs across the supply
+ * range and substitutes into the template — gives a representative
+ * sample of the collection. Falls back to the single sample image when
+ * we don't have a template or supply.
+ */
+function buildCollageImages(
+  collection: ApiCollection,
+  count: number,
+): string[] {
+  const template = collection.imageUrlTemplate;
+  const supply = collection.totalSupply ? Number(collection.totalSupply) : 0;
+  if (!template || supply <= 0) {
+    return collection.sampleImageUrl ? [collection.sampleImageUrl] : [];
+  }
+  const out: string[] = [];
+  for (let i = 0; i < count; i++) {
+    // Evenly distributed: centers of `count` equal buckets across 1..supply.
+    const id = Math.max(1, Math.floor(((i + 0.5) * supply) / count));
+    out.push(template.replace(/\{id\}/g, String(id)));
+  }
+  return out;
+}
+
+const PODIUM_TIERS: Record<
+  1 | 2 | 3,
+  { border: string; ring: string; label: string; gradient: string }
+> = {
+  1: {
+    border: "border-yellow-400/80",
+    ring: "shadow-yellow-400/25",
+    label: "Gold",
+    gradient: "from-yellow-200 to-yellow-500",
+  },
+  2: {
+    border: "border-zinc-300/80",
+    ring: "shadow-zinc-300/20",
+    label: "Silver",
+    gradient: "from-zinc-100 to-zinc-400",
+  },
+  3: {
+    border: "border-amber-700/80",
+    ring: "shadow-amber-700/20",
+    label: "Bronze",
+    gradient: "from-amber-500 to-amber-800",
+  },
+};
+
+/**
+ * Full-width podium card for the top 3 trending collections. Gold,
+ * silver, or bronze border by rank, with a dimmed collage of token
+ * images as the background and the canonical thumbnail+info pinned to
+ * the left.
+ */
+function TrendingPodiumCard({
+  rank,
+  collection,
+}: {
+  rank: 1 | 2 | 3;
+  collection: ApiCollection;
+}) {
+  const name = collection.name || collection.address.slice(0, 10);
+  const symbol = collection.symbol || "";
+  const transferCount = collection.transferCount ?? 0;
+  const uniqueHolders = collection.uniqueHolders ?? 0;
+  const supply = collection.totalSupply ? Number(collection.totalSupply) : 0;
+  const tier = PODIUM_TIERS[rank];
+
+  const collageImages = useMemo(
+    () => buildCollageImages(collection, 8),
+    [collection],
+  );
+
+  return (
+    <a
+      href={`/collection/${collection.address}`}
+      className={`group relative block border-2 ${tier.border} rounded-xl overflow-hidden bg-background-secondary hover:shadow-lg ${tier.ring} transition-all`}
+    >
+      {/* Collage background — tile of evenly-sampled token images. */}
+      <div className="absolute inset-0 flex pointer-events-none select-none">
+        {collageImages.map((url, i) => (
+          <div key={i} className="flex-1 min-w-0 h-full">
+            <NftImage src={url} alt="" className="w-full h-full" />
+          </div>
+        ))}
+      </div>
+      {/* Dimming so the collage stays atmospheric, not noisy. Left side
+          stays darker so the thumbnail / text remain legible. */}
+      <div className="absolute inset-0 bg-background-secondary/55" />
+      <div className="absolute inset-0 bg-gradient-to-r from-background-secondary via-background-secondary/70 to-background-secondary/30" />
+
+      {/* Content */}
+      <div className="relative z-10 flex gap-4 p-4 items-start">
+        <div className="flex flex-col items-center gap-2 flex-shrink-0">
+          <div className="w-28 h-28 sm:w-32 sm:h-32 rounded-lg overflow-hidden border border-border bg-background-tertiary">
+            <NftImage
+              src={collection.sampleImageUrl ?? ""}
+              alt={name}
+              className="w-full h-full"
+              priority={rank === 1}
+            />
+          </div>
+          <div
+            className={`text-xs font-bold uppercase tracking-widest bg-gradient-to-r ${tier.gradient} bg-clip-text text-transparent`}
+          >
+            #{rank} {tier.label}
+          </div>
+        </div>
+        <div className="flex-1 min-w-0 flex flex-col gap-1">
+          <div className="text-xl sm:text-2xl font-bold truncate">{name}</div>
+          {symbol && (
+            <div className="text-sm text-foreground-secondary truncate">
+              {symbol}
+            </div>
+          )}
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-1 mt-2 text-sm">
+            <span>
+              <span className="text-mint font-medium">
+                {formatCompact(transferCount)}
+              </span>
+              <span className="text-foreground-secondary ml-1">transfers</span>
+            </span>
+            <span>
+              <span className="text-mint font-medium">
+                {formatNumber(uniqueHolders)}
+              </span>
+              <span className="text-foreground-secondary ml-1">holders</span>
+            </span>
+            {supply > 0 && (
+              <span>
+                <span className="text-mint font-medium">
+                  {formatNumber(supply)}
+                </span>
+                <span className="text-foreground-secondary ml-1">items</span>
+              </span>
+            )}
+          </div>
+        </div>
       </div>
     </a>
   );
