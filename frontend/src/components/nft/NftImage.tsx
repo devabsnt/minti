@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
 import { IPFS_GATEWAYS } from "@/config/constants";
 import { resolveUri, toCanonicalIpfsUri } from "@/lib/metadata";
 
@@ -167,6 +167,20 @@ export function NftImage({
   } else {
     currentSrc = rewriteIpfsUrl(src);
   }
+
+  // Watchdog: if neither `onLoad` nor `onError` fires within 12 seconds,
+  // assume the gateway has hung the connection (common with dead IPFS
+  // gateways — TCP accepted, no bytes back). Force the error path so
+  // the gateway-fallback ladder advances. Without this, the card stays
+  // in its loading shimmer forever — the failure mode the user noted
+  // where images don't display but no CORS / 4xx ever logs.
+  useEffect(() => {
+    if (loaded || allFailed) return;
+    const timer = setTimeout(() => {
+      if (!loaded) handleError();
+    }, 12_000);
+    return () => clearTimeout(timer);
+  }, [loaded, allFailed, currentSrc, handleError]);
 
   if (!src || allFailed) {
     return (

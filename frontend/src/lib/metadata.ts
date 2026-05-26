@@ -133,6 +133,45 @@ export function toCanonicalIpfsUri(uri: string): string | undefined {
   return undefined;
 }
 
+/**
+ * Fetch the URL with a couple of retries on transient failures. The
+ * browser reports a lot of failure modes as `TypeError: Failed to fetch`
+ * or "CORS error" when the actual cause is a TCP reset, an upstream
+ * timeout, or a preflight that never completed — i.e. retryable.
+ * Retries with small backoff. We only retry on TypeError (the network
+ * failure / opaque-failure case) or 5xx; 4xx is treated as terminal.
+ */
+async function fetchTextWithRetry(
+  url: string,
+  attempts = 3,
+  timeoutMs = 10_000,
+): Promise<string> {
+  let lastErr: Error | null = null;
+  for (let i = 0; i < attempts; i++) {
+    try {
+      const response = await fetch(url, {
+        signal: AbortSignal.timeout(timeoutMs),
+        credentials: "omit",
+        referrerPolicy: "no-referrer",
+      });
+      if (response.ok) return await response.text();
+      // Server responded — only retry on 5xx; 4xx (404 etc) is final.
+      if (response.status >= 400 && response.status < 500) {
+        throw new Error(`Failed to fetch metadata: ${response.status}`);
+      }
+      lastErr = new Error(`Failed to fetch metadata: ${response.status}`);
+    } catch (err) {
+      lastErr = err instanceof Error ? err : new Error(String(err));
+      // Abort/timeout/typeerror — all retryable.
+    }
+    if (i < attempts - 1) {
+      // Backoff: 200ms, 600ms.
+      await new Promise((r) => setTimeout(r, 200 * Math.pow(3, i)));
+    }
+  }
+  throw lastErr ?? new Error("Failed to fetch metadata");
+}
+
 async function fetchWithGatewayFallback(uri: string): Promise<string> {
   // BELT-AND-SUSPENDERS: parseIpfsUri should catch every ipfs:/* form,
   // but if it ever returns null for one we still must not call
@@ -141,32 +180,22 @@ async function fetchWithGatewayFallback(uri: string): Promise<string> {
   if (/^ipfs:\/{1,2}/i.test(uri)) {
     const stripped = uri.replace(/^ipfs:\/{1,2}/i, "");
     const gateway = IPFS_GATEWAYS[0] ?? "https://ipfs.io/ipfs/";
-    const url = gateway + stripped;
-    const response = await fetch(url, { signal: AbortSignal.timeout(10_000) });
-    if (!response.ok) {
-      throw new Error(`Failed to fetch ipfs metadata: ${response.status}`);
-    }
-    return response.text();
+    return fetchTextWithRetry(gateway + stripped);
   }
 
   const ipfs = parseIpfsUri(uri);
 
   // Non-IPFS URI. Two paths:
   //   - Known-dead host (codepunks.fun, etc.) → throw immediately.
-  //   - Anything else → direct fetch. CORS-blocked hosts will fail
-  //     gracefully and the card shows a placeholder.
+  //   - Anything else → fetch with retry. Same host returning 200 for
+  //     most tokens but a flaky failure for a few is the signature of
+  //     a transient (rate limit, TCP reset) — retry usually wins.
   if (!ipfs) {
     const resolved = resolveUri(uri);
     if (isDeadHost(resolved)) {
       throw new Error("Metadata host is dead");
     }
-    const response = await fetch(resolved, {
-      signal: AbortSignal.timeout(10_000),
-    });
-    if (!response.ok) {
-      throw new Error(`Failed to fetch metadata: ${response.status}`);
-    }
-    return response.text();
+    return fetchTextWithRetry(resolved);
   }
 
   // IPFS-shaped URI — race all gateways in parallel. Whichever returns
