@@ -59,6 +59,30 @@ collectionsRoutes.get("/", async (c) => {
   }
   const where = and(...whereClauses)!;
 
+  // Composite trending score:
+  //   - log-scaled secondary transfers (non-mint movement) — actual market activity
+  //   - log-scaled unique_senders weighted highest — diversity of sellers is
+  //     the strongest "real market" signal. An airdrop has 1 sender; a
+  //     traded collection has hundreds.
+  //   - log-scaled unique_holders for breadth
+  //   - penalty when mint_count/transfer_count ratio is very high (airdrop
+  //     signature: lots of transfers but they're all mint events)
+  //
+  // Logs prevent any single huge number from dominating. Weights tuned
+  // so unique_senders carries more than raw transfer count.
+  const trendingScoreSql = sql`(
+    LN(1 + GREATEST(0, ${collections.transferCount} - ${collections.mintCount})) * 2.0
+    + LN(1 + ${collections.uniqueSenders}) * 2.5
+    + LN(1 + ${collections.uniqueHolders}) * 1.0
+    - CASE
+        WHEN ${collections.transferCount} > 0
+         AND ${collections.mintCount}::float / GREATEST(${collections.transferCount}, 1) > 0.85 THEN 5.0
+        WHEN ${collections.transferCount} > 0
+         AND ${collections.mintCount}::float / GREATEST(${collections.transferCount}, 1) > 0.65 THEN 2.0
+        ELSE 0.0
+      END
+  )`;
+
   let orderBy;
   switch (sort) {
     case "holders":
@@ -72,7 +96,7 @@ collectionsRoutes.get("/", async (c) => {
       break;
     case "trending":
     default:
-      orderBy = [desc(collections.transferCount), desc(collections.uniqueHolders)];
+      orderBy = [sql`${trendingScoreSql} DESC`];
       break;
   }
 
