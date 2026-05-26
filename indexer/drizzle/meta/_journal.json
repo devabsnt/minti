@@ -15,6 +15,13 @@
       "when": 1779782787844,
       "tag": "0001_cloudy_liz_osborn",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1779784448000,
+      "tag": "0002_condemned_princess_powerful",
+      "breakpoints": true
     }
   ]
 }

@@ -433,24 +433,21 @@ function buildCollageImages(
 
 const PODIUM_TIERS: Record<
   1 | 2 | 3,
-  { border: string; ring: string; label: string; gradient: string }
+  { border: string; ring: string; gradient: string }
 > = {
   1: {
     border: "border-yellow-400/80",
     ring: "shadow-yellow-400/25",
-    label: "Gold",
     gradient: "from-yellow-200 to-yellow-500",
   },
   2: {
     border: "border-zinc-300/80",
     ring: "shadow-zinc-300/20",
-    label: "Silver",
     gradient: "from-zinc-100 to-zinc-400",
   },
   3: {
     border: "border-amber-700/80",
     ring: "shadow-amber-700/20",
-    label: "Bronze",
     gradient: "from-amber-500 to-amber-800",
   },
 };
@@ -476,22 +473,57 @@ function TrendingPodiumCard({
   const tier = PODIUM_TIERS[rank];
 
   const collageImages = useMemo(
-    () => buildCollageImages(collection, 8),
+    () => buildCollageImages(collection, 5),
     [collection],
   );
+  // The drift animation needs at least two distinct images to look like
+  // a scroll rather than a single image sliding off-screen. For the
+  // shared-image fallback (`buildCollageImages` returning one URL) we
+  // skip the animation entirely.
+  const driftable = collageImages.length > 1;
+  // Doubled list so the animation can loop seamlessly: at the -50%
+  // endpoint the row visually matches the start position (each tile
+  // appears at the same x-offset as its duplicate one cycle later).
+  const collageRow = driftable
+    ? collageImages.concat(collageImages)
+    : collageImages;
+  // Each tile takes `1 / collageRow.length` of the doubled row width,
+  // which equals `1 / collageImages.length` of the visible card width.
+  const tileWidthPct = collageRow.length > 0 ? 100 / collageRow.length : 100;
 
   return (
     <a
       href={`/collection/${collection.address}`}
-      className={`group relative block border-2 ${tier.border} rounded-xl overflow-hidden bg-background-secondary hover:shadow-lg ${tier.ring} transition-all`}
+      className={`group collage-drift-on-hover relative block border-2 ${tier.border} overflow-hidden bg-background-secondary hover:shadow-lg ${tier.ring} transition-all`}
     >
-      {/* Collage background — tile of evenly-sampled token images. */}
-      <div className="absolute inset-0 flex pointer-events-none select-none">
-        {collageImages.map((url, i) => (
-          <div key={i} className="flex-1 min-w-0 h-full">
-            <NftImage src={url} alt="" className="w-full h-full" />
-          </div>
-        ))}
+      {/* Collage background — tile of evenly-sampled token images.
+          Plain <img> tags with native lazy loading: no watchdog timers,
+          no fallback ladder, no React state — just decoration. If a
+          single tile fails, the background simply has a gap, which the
+          dimming overlay hides. The track is twice as wide as the
+          visible card and slides slowly to the left on hover. */}
+      <div className="absolute inset-0 overflow-hidden pointer-events-none select-none">
+        <div
+          className="collage-drift-track flex h-full"
+          style={{ width: driftable ? "200%" : "100%" }}
+        >
+          {collageRow.map((url, i) => (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img
+              key={i}
+              src={url}
+              alt=""
+              aria-hidden
+              loading="lazy"
+              decoding="async"
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              {...({ fetchpriority: "low" } as any)}
+              referrerPolicy="no-referrer"
+              className="h-full object-cover flex-shrink-0"
+              style={{ width: `${tileWidthPct}%` }}
+            />
+          ))}
+        </div>
       </div>
       {/* Dimming so the collage stays atmospheric, not noisy. Left side
           stays darker so the thumbnail / text remain legible. */}
@@ -510,9 +542,9 @@ function TrendingPodiumCard({
             />
           </div>
           <div
-            className={`text-xs font-bold uppercase tracking-widest bg-gradient-to-r ${tier.gradient} bg-clip-text text-transparent`}
+            className={`text-2xl font-extrabold bg-gradient-to-r ${tier.gradient} bg-clip-text text-transparent`}
           >
-            #{rank} {tier.label}
+            #{rank}
           </div>
         </div>
         <div className="flex-1 min-w-0 flex flex-col gap-1">

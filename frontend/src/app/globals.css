@@ -44,3 +44,15 @@ body {
   background: var(--color-mint-glow);
   color: var(--color-mint);
 }
+
+/* Trending podium collage. Pauses when not hovered, slides slowly on
+   hover. The row holds the collage images twice over so the
+   translateX(-50%) endpoint visually matches the start position — no
+   visible jump as the animation loops. */
+@keyframes collage-drift {
+  from { transform: translateX(0); }
+  to { transform: translateX(-50%); }
+}
+.collage-drift-on-hover:hover .collage-drift-track {
+  animation: collage-drift 30s linear infinite;
+}

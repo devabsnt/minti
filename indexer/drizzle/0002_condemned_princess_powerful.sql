@@ -1,0 +1,1 @@
+ALTER TABLE "collections" ADD COLUMN "unique_minters" integer DEFAULT 0 NOT NULL;

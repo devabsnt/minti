@@ -47,6 +47,11 @@ export const collections = pgTable("collections", {
   mintCount: integer("mint_count").notNull().default(0),
   uniqueHolders: integer("unique_holders").notNull().default(0),
   uniqueSenders: integer("unique_senders").notNull().default(0),
+  // Distinct wallets that received at least one mint event. Used to
+  // dampen mint contribution in the trending score: 500 mints to 500
+  // wallets is genuine launch demand; 500 mints to 1 wallet is a
+  // single farmer.
+  uniqueMinters: integer("unique_minters").notNull().default(0),
   // Holder-concentration metrics, fraction in [0, 1]. Computed from the
   // tokens table per (contract, owner). Used to penalize the trending
   // score for collections where supply is heavily concentrated in a

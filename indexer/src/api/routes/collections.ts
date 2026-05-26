@@ -59,43 +59,41 @@ collectionsRoutes.get("/", async (c) => {
   }
   const where = and(...whereClauses)!;
 
-  // Composite trending score with two multiplicative gating factors.
+  // Composite trending score.
   //
-  // The previous additive formula let high-transfer / low-diversity
-  // collections (airdrops with 1 sender, LP-like contracts) outrank
-  // genuine markets like skrumpeys and r3tards because their secondary-
-  // transfer counts dwarfed everything else. Multiplying by a diversity
-  // factor caps low-sender collections at a fraction of their potential
-  // score: a 1-sender airdrop gets ~3% of the score it would have at
-  // 30+ senders.
+  // Activity terms (additive, log-scaled so an order-of-magnitude
+  // bigger collection isn't an order-of-magnitude better):
+  //   - secondary_transfers : actual ownership movement (excludes mints)
+  //   - unique_senders      : how many distinct wallets are selling
+  //   - unique_holders      : breadth of current ownership
+  //   - mint_diversity_term : LN(1 + mint_count) * minter_diversity
+  //                           where minter_diversity = unique_minters /
+  //                           mint_count. 500 mints to 500 wallets gets
+  //                           full credit; 500 mints to 1 wallet gets
+  //                           near-zero credit.
   //
-  //   activity = LN(1 + secondary_transfers) * 2.0   // actual movement
-  //            + LN(1 + unique_senders)      * 2.5   // diversity (also additive)
-  //            + LN(1 + unique_holders)      * 1.0   // breadth
+  // Multiplicative gating factors (must all be present, not just one):
+  //   - sender_diversity_factor : LEAST(1, unique_senders / 30). A
+  //                               1-sender airdrop ranks at ~3% of its
+  //                               otherwise-equivalent score.
+  //   - concentration_factor    : GREATEST(0.05, 1 - 2 * top1_holder_pct).
+  //                               One wallet at 50%+ of supply zeroes the
+  //                               score; 25%+ knocks it down by half.
+  //                               (top10 dropped — its window-function
+  //                               cost was too high; top1 alone catches
+  //                               the gaming patterns we care about.)
   //
-  //   diversity_factor = LEAST(1, unique_senders / 30)
-  //     // 0..1, full at 30+ unique sellers
-  //
-  //   concentration_factor = GREATEST(0.02, (1 - top10_pct) * (1 - 2*top1_pct))
-  //     // Strong anti-gaming: one wallet at 50%+ of supply effectively
-  //     // zeroes the score; top10 at 80%+ knocks it down to ~4%. Floor
-  //     // at 0.02 so a collection can still appear if everything else
-  //     // about it is extraordinary.
-  //
-  //   mint_penalty = 5 if >85% mints, 2 if >65%
-  //
-  //   score = activity * diversity_factor * concentration_factor
-  //         - mint_penalty
+  // Mint-heavy penalty (additive, on top of multiplicative gates):
+  //   -5 if >85% of activity is mints, -2 if >65%. Catches the
+  //   "drop-and-flip" pattern where almost no secondary trading occurs.
   const trendingScoreSql = sql`(
     (LN(1 + GREATEST(0, ${collections.transferCount} - ${collections.mintCount})) * 2.0
       + LN(1 + ${collections.uniqueSenders}) * 2.5
-      + LN(1 + ${collections.uniqueHolders}) * 1.0)
+      + LN(1 + ${collections.uniqueHolders}) * 1.0
+      + LN(1 + ${collections.mintCount}) * 1.5
+        * (${collections.uniqueMinters}::float / GREATEST(${collections.mintCount}, 1)))
     * LEAST(1.0, ${collections.uniqueSenders}::float / 30.0)
-    * GREATEST(
-        0.02,
-        (1.0 - ${collections.top10HolderPct})
-        * GREATEST(0.0, 1.0 - 2.0 * ${collections.top1HolderPct})
-      )
+    * GREATEST(0.05, 1.0 - 2.0 * ${collections.top1HolderPct})
     - CASE
         WHEN ${collections.transferCount} > 0
          AND ${collections.mintCount}::float / GREATEST(${collections.transferCount}, 1) > 0.85 THEN 5.0

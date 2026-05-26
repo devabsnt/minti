@@ -16,16 +16,20 @@ import { env } from "../env.js";
  *     pruning). Survives `activity` pruning.
  *   - unique_senders: distinct `from_addr` in `activity` per contract.
  *     Same retention semantics as transfer_count.
- *   - top1_holder_pct / top10_holder_pct: share of supply held by the
- *     #1 / top-10 wallets. Computed by grouping tokens by owner, ranking,
- *     and dividing by the per-contract supply represented in `tokens`.
- *     Used downstream as an anti-gaming penalty in the trending score —
- *     collections where one wallet holds most of the supply get heavily
- *     down-ranked regardless of transfer volume.
+ *   - unique_minters: distinct `to_addr` for mint events. Lets the
+ *     trending score reward broad mint participation while ignoring
+ *     single-wallet farm mints.
+ *   - top1_holder_pct: share of supply held by the single largest
+ *     wallet. Computed by grouping tokens by owner and taking
+ *     MAX(balance) / SUM(balance) per contract — cheap aggregate, no
+ *     window function. (We tried `top10_holder_pct` via ROW_NUMBER
+ *     window function but it never finished on the basic Railway tier.
+ *     The single-wallet signal alone catches the gaming patterns we
+ *     care about.)
  *
  * Cost: a few CTEs + UPDATE. Postgres handles it well with the existing
  * indexes on activity(contract, block_number) and tokens(contract).
- * For 30k collections + millions of activity rows, expect a few seconds.
+ * For 30k collections + millions of rows, expect a few seconds.
  */
 export async function refreshStats(): Promise<{ updated: number; elapsedMs: number }> {
   const t = Date.now();
@@ -40,7 +44,8 @@ export async function refreshStats(): Promise<{ updated: number; elapsedMs: numb
         contract,
         COUNT(*)::int AS transfer_count,
         COUNT(*) FILTER (WHERE event_type = 'mint')::int AS mint_count,
-        COUNT(DISTINCT from_addr) FILTER (WHERE from_addr IS NOT NULL AND from_addr <> '${ZERO}')::int AS unique_senders
+        COUNT(DISTINCT from_addr) FILTER (WHERE from_addr IS NOT NULL AND from_addr <> '${ZERO}')::int AS unique_senders,
+        COUNT(DISTINCT to_addr) FILTER (WHERE event_type = 'mint' AND to_addr IS NOT NULL AND to_addr <> '${ZERO}')::int AS unique_minters
       FROM activity
       GROUP BY contract
     ),
@@ -50,21 +55,13 @@ export async function refreshStats(): Promise<{ updated: number; elapsedMs: numb
       WHERE owner IS NOT NULL AND owner <> '${ZERO}'
       GROUP BY contract, owner
     ),
-    ranked AS (
-      SELECT
-        contract,
-        balance,
-        ROW_NUMBER() OVER (PARTITION BY contract ORDER BY balance DESC) AS rnk
-      FROM balances
-    ),
     holder_stats AS (
       SELECT
         contract,
         COUNT(*)::int AS unique_holders,
         SUM(balance)::bigint AS total_held,
-        MAX(balance)::bigint AS top1_balance,
-        SUM(balance) FILTER (WHERE rnk <= 10)::bigint AS top10_balance
-      FROM ranked
+        MAX(balance)::bigint AS top1_balance
+      FROM balances
       GROUP BY contract
     )
     UPDATE collections c
@@ -72,15 +69,13 @@ export async function refreshStats(): Promise<{ updated: number; elapsedMs: numb
       transfer_count = COALESCE(a.transfer_count, 0),
       mint_count = COALESCE(a.mint_count, 0),
       unique_senders = COALESCE(a.unique_senders, 0),
+      unique_minters = COALESCE(a.unique_minters, 0),
       unique_holders = COALESCE(h.unique_holders, 0),
       top1_holder_pct = CASE
         WHEN h.total_held > 0 THEN (h.top1_balance::float / h.total_held)::real
         ELSE 0
       END,
-      top10_holder_pct = CASE
-        WHEN h.total_held > 0 THEN (h.top10_balance::float / h.total_held)::real
-        ELSE 0
-      END,
+      top10_holder_pct = 0,
       updated_at = now()
     FROM activity_stats a
     FULL OUTER JOIN holder_stats h USING (contract)
@@ -101,8 +96,15 @@ export async function startStatsLoop(): Promise<void> {
   process.once("SIGTERM", () => { stop = true; });
   process.once("SIGINT", () => { stop = true; });
 
-  // Do an immediate first refresh so newly-discovered collections get
-  // accurate stats without waiting STATS_REFRESH_SECONDS.
+  // Hold off the first refresh for 45s after boot. The CTE scans all of
+  // activity + tokens and saturates Postgres IO/CPU on the basic Railway
+  // tier; concurrent API requests get queued behind it and the first
+  // /explore load can take 50s+. Letting the API serve initial traffic
+  // first means users see the page snappily, then stats catch up in the
+  // background. Newly-discovered collections still get stats within
+  // 45s + STATS_REFRESH_SECONDS, which is fine.
+  await sleep(45_000);
+
   while (!stop) {
     try {
       const { updated, elapsedMs } = await refreshStats();
