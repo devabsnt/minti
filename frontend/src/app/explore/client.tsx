@@ -469,7 +469,10 @@ function FeaturedCard({ entry }: { entry: FeaturedCollectionEntry }) {
         <div className="absolute inset-0 bg-background-secondary/55" />
         <div className="absolute inset-0 bg-gradient-to-r from-background-secondary via-background-secondary/70 to-background-secondary/30" />
 
-        {/* Featured pill + postmark stamp in the top-right. */}
+        {/* Featured pill + minti approval postmark in the top-right.
+            The postmark is a clean SVG (no aging / erosion); reads
+            "MINTI.ART / APPROVED" curved around the rings, with the
+            dumpling silhouette in the center. */}
         <div
           className="absolute top-3 right-4 flex items-center gap-2 z-10 pointer-events-none"
           aria-hidden
@@ -477,9 +480,9 @@ function FeaturedCard({ entry }: { entry: FeaturedCollectionEntry }) {
           <span className="stamp-pill">Featured</span>
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img
-            src="/postmark.png"
+            src="/postmark-minti.svg"
             alt=""
-            className="w-16 h-16 opacity-80"
+            className="w-20 h-20"
             style={{ transform: "rotate(-8deg)" }}
             loading="lazy"
           />
@@ -528,18 +531,18 @@ function FeaturedCard({ entry }: { entry: FeaturedCollectionEntry }) {
               )}
               <FloorPrice contractAddress={collection.address} />
             </div>
-            {/* Same 24h activity sparkline as the podium cards. */}
+            {/* Same 24h activity sparkline as the podium cards.
+                "24h" label sits immediately to the right of the
+                sparkline, not floated to the card edge. */}
             <div
-              className="mt-3 flex items-center gap-3"
+              className="mt-3 flex items-center gap-2"
               title="Activity in the last 24 hours"
             >
-              <div className="flex-1 min-w-0">
-                <ActivitySparkline
-                  contractAddress={collection.address}
-                  width={240}
-                  height={32}
-                />
-              </div>
+              <ActivitySparkline
+                contractAddress={collection.address}
+                width={240}
+                height={32}
+              />
               <span className="text-[10px] uppercase tracking-widest text-foreground-secondary">
                 24h
               </span>
@@ -820,20 +823,18 @@ function TrendingPodiumCard({
               )}
               <FloorPrice contractAddress={collection.address} />
             </div>
-            {/* 24h activity sparkline below the stats row. The chart
-                takes the full width of the info column on the podium
-                card, with a small "24h" label aligned right. */}
+            {/* 24h activity sparkline below the stats row. "24h"
+                label sits immediately to the right of the chart, not
+                floated to the card edge. */}
             <div
-              className="mt-3 flex items-center gap-3"
+              className="mt-3 flex items-center gap-2"
               title="Activity in the last 24 hours"
             >
-              <div className="flex-1 min-w-0">
-                <ActivitySparkline
-                  contractAddress={collection.address}
-                  width={240}
-                  height={32}
-                />
-              </div>
+              <ActivitySparkline
+                contractAddress={collection.address}
+                width={240}
+                height={32}
+              />
               <span className="text-[10px] uppercase tracking-widest text-foreground-secondary">
                 24h
               </span>

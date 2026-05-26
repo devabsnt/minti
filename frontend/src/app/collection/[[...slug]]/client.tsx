@@ -827,29 +827,34 @@ function TokenDetailPage({
   const metadata = isEvmfs ? evmfsMetadata : legacyMetadata;
   const isLoading = isEvmfs ? !evmfsMetadata && !viewerUri : legacyLoading;
 
-  // Image resolution. We prefer the indexer-synthesized URL over the
-  // live tokenURI fetch because:
-  //   - The gallery already uses the synthesized form via the same
-  //     `imageUrlTemplate`, so the modal image matches what the user
-  //     just clicked from.
-  //   - The live fetch goes through `useNftMetadata` -> JSON fetch.
-  //     Some collections (e.g. scatter's `instareveal` API) don't
-  //     send CORS headers, so the fetch fails and we end up retrying
-  //     repeatedly while the modal sits empty. Synthesizing avoids
-  //     that round trip for the image entirely.
-  // The metadata fetch still runs in the background to pick up
-  // description / attributes when available, but the image renders
-  // immediately from the synthesized URL.
+  // Image resolution. The order matters because there are two
+  // failure modes we have to handle without showing the wrong image:
+  //   1. CORS-blocked tokenURI hosts (scatter etc.) - metadata fetch
+  //      fails, we need a fallback so the modal doesn't sit empty.
+  //   2. Collections whose `imageUrlTemplate` has no `{id}`
+  //      placeholder (the indexer recorded a static URL because the
+  //      shape didn't expose a tokenId substring). Substituting a
+  //      template with no placeholder is a no-op and yields the same
+  //      URL for every token - wrong.
+  //
+  // Logic:
+  //   - If template contains `{id}`, the indexer cracked the
+  //     per-token URL pattern. Use that - fast, no CORS, matches
+  //     gallery thumbnails exactly.
+  //   - Otherwise wait for the live metadata fetch (carries the
+  //     per-token `image` field from the JSON). Falls back to
+  //     `sampleImageUrl` only when the live fetch genuinely failed
+  //     and we have nothing else.
   const { data: indexerCollData } = useIndexerCollection(collectionAddress);
   const imageUrlTemplate = indexerCollData?.collection?.imageUrlTemplate;
   const sampleImageUrl = indexerCollData?.collection?.sampleImageUrl;
-  const synthesizedImage = useMemo(() => {
-    if (imageUrlTemplate) {
+  const templateHasId = !!imageUrlTemplate && imageUrlTemplate.includes("{id}");
+  const effectiveImage = useMemo(() => {
+    if (templateHasId && imageUrlTemplate) {
       return imageUrlTemplate.replace(/\{id\}/g, tokenId);
     }
-    return sampleImageUrl ?? "";
-  }, [imageUrlTemplate, sampleImageUrl, tokenId]);
-  const effectiveImage = synthesizedImage || metadata?.image || "";
+    return metadata?.image || sampleImageUrl || "";
+  }, [templateHasId, imageUrlTemplate, tokenId, metadata?.image, sampleImageUrl]);
   const { data: bids } = useCollectionBids(collectionAddress);
   const { data: offers } = useCollectionOffers(collectionAddress);
 

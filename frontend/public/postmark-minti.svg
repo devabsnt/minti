@@ -1,0 +1,103 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Minti approval postmark.
+
+  Two concentric circles with "minti.art approved" curved around
+  the top arc, "Nº 001" or a small motif on the bottom arc, and a
+  stylized dumpling silhouette in the center. Drawn in pure vector
+  so it stays crisp at any size and has none of the erosion/aging
+  applied to the original mintiNFT artwork.
+
+  Color: `currentColor` so the consumer (HTML `<img>` or inline use)
+  can recolor by setting `color` on the parent. The default render
+  uses vermillion from the project palette.
+-->
+<svg
+  xmlns="http://www.w3.org/2000/svg"
+  viewBox="0 0 200 200"
+  width="200"
+  height="200"
+  fill="none"
+  stroke="currentColor"
+  color="#c53a2c"
+>
+  <!-- Outer ring -->
+  <circle cx="100" cy="100" r="94" stroke-width="2.5" />
+  <!-- Inner ring (creates the channel that the curved text sits in) -->
+  <circle cx="100" cy="100" r="74" stroke-width="1.4" />
+
+  <!-- Curved text paths.
+       Top arc: text reads left-to-right across the top (sweep from
+       left edge to right edge, going up over the top).
+       Bottom arc: text reads left-to-right across the bottom
+       (drawn from left edge sweeping DOWN under the bottom, so when
+       the textPath runs along it, glyphs sit upright). -->
+  <defs>
+    <path
+      id="pm-top-arc"
+      d="M 16,100 A 84,84 0 0,1 184,100"
+    />
+    <path
+      id="pm-bot-arc"
+      d="M 184,100 A 84,84 0 0,1 16,100"
+    />
+  </defs>
+
+  <text
+    fill="currentColor"
+    stroke="none"
+    font-family="serif"
+    font-size="15"
+    font-weight="700"
+    letter-spacing="3"
+  >
+    <textPath href="#pm-top-arc" startOffset="50%" text-anchor="middle">
+      MINTI.ART
+    </textPath>
+  </text>
+  <text
+    fill="currentColor"
+    stroke="none"
+    font-family="serif"
+    font-size="13"
+    font-weight="700"
+    letter-spacing="2"
+  >
+    <textPath href="#pm-bot-arc" startOffset="50%" text-anchor="middle">
+      APPROVED
+    </textPath>
+  </text>
+
+  <!-- Central dumpling silhouette.
+       Rounded body with three small pleat-lines converging at the
+       apex. Stroked, not filled, so it reads as a stamp impression
+       rather than a logo block. -->
+  <g
+    transform="translate(100 108)"
+    stroke="currentColor"
+    fill="none"
+    stroke-width="2.6"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  >
+    <!-- Body -->
+    <path
+      d="M -34 4
+         C -34 -16 -20 -26 0 -26
+         C 20 -26 34 -16 34 4
+         C 34 22 18 32 0 32
+         C -18 32 -34 22 -34 4 Z"
+    />
+    <!-- Pleats at the top -->
+    <path d="M -14 -20 L -6 -27" />
+    <path d="M 0 -18 L 0 -28" />
+    <path d="M 14 -20 L 6 -27" />
+    <!-- A subtle mouth/curve hint near the bottom of the body -->
+    <path d="M -10 16 Q 0 20 10 16" />
+  </g>
+
+  <!-- Two small accent dots flanking the dumpling, mimicking the
+       pair of dots in the original postcard postmark. -->
+  <circle cx="40" cy="135" r="1.8" fill="currentColor" stroke="none" />
+  <circle cx="160" cy="135" r="1.8" fill="currentColor" stroke="none" />
+</svg>
