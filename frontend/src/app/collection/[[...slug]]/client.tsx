@@ -234,6 +234,7 @@ function CollectionPage({
   // Substitute `{id}` in the collection's image URL template for the
   // browse grid. Computed once per token list change.
   const imageUrlTemplate = indexerCollection?.imageUrlTemplate ?? null;
+  const sampleImageUrl = indexerCollection?.sampleImageUrl ?? null;
 
   const {
     tokens: ownedDiscovered,
@@ -467,22 +468,10 @@ function CollectionPage({
                     metadata={
                       // Prefer batched-fetched metadata when present
                       // (legacy Enumerable path). Otherwise synthesize
-                      // from the collection's template: NO per-token
-                      // network fetch, no scatter 502s. Falls back to
-                      // an empty object so NftImage shows its placeholder.
+                      // from the collection's template (or sample image
+                      // for shared-image collections like Donads).
                       metadataMap?.get(`${collectionAddress}:${token.tokenId}`) ??
-                      (imageUrlTemplate
-                        ? {
-                            name: `#${token.tokenId.toString()}`,
-                            description: "",
-                            image: imageUrlTemplate.replace(
-                              /\{id\}/g,
-                              token.tokenId.toString(),
-                            ),
-                            attributes: [],
-                            raw: {},
-                          }
-                        : undefined)
+                      synthesizeTokenMetadata(token.tokenId, imageUrlTemplate, sampleImageUrl)
                     }
                     seller={token.owner !== address?.toLowerCase() ? token.owner : undefined}
                   />
@@ -878,32 +867,62 @@ function TokenDetailPage({
 
 // ═══════════════════════════ SHARED ═══════════════════════════
 
+/**
+ * Build a minimal `NftMetadata` object from collection-level data so
+ * we never need a per-token network fetch in the browse grid:
+ *
+ *   1. If imageUrlTemplate exists → substitute `{id}` for the tokenId.
+ *      Per-token unique images (most collections).
+ *   2. Otherwise if sampleImageUrl exists → use it for every token.
+ *      "Shared image" collections (Donads, Pixel Panda etc) where the
+ *      contract returns one image for all NFTs.
+ *   3. Otherwise → undefined, NftCard shows placeholder.
+ */
+function synthesizeTokenMetadata(
+  tokenId: bigint | string,
+  imageUrlTemplate: string | null | undefined,
+  sampleImageUrl: string | null | undefined,
+): {
+  name: string;
+  description: string;
+  image: string;
+  attributes: never[];
+  raw: Record<string, never>;
+} | undefined {
+  const tid = tokenId.toString();
+  const image = imageUrlTemplate
+    ? imageUrlTemplate.replace(/\{id\}/g, tid)
+    : (sampleImageUrl ?? "");
+  if (!image) return undefined;
+  return {
+    name: `#${tid}`,
+    description: "",
+    image,
+    attributes: [],
+    raw: {},
+  };
+}
+
 function OwnedCollectionCard({
   contractAddress,
   tokenId,
   imageUrlTemplate,
+  sampleImageUrl,
 }: {
   contractAddress: `0x${string}`;
   tokenId: bigint;
   imageUrlTemplate?: string | null;
+  sampleImageUrl?: string | null;
 }) {
-  // When we have a template, skip the per-token metadata fetch entirely
-  // — synthesize the image URL by substituting the tokenId. This is what
-  // kills the scatter-502 storm for r3tards-style collections, since
-  // scatter's JSON endpoint is CORS-blocked but its image endpoint
-  // accepts ?tokenId=N directly.
+  // Skip the per-token fetch when we can synthesize from collection
+  // template or shared sample image. Avoids scatter-502 storm.
+  const haveSynth = !!imageUrlTemplate || !!sampleImageUrl;
   const { data: fetched } = useNftMetadata(
     contractAddress,
-    imageUrlTemplate ? undefined : tokenId,
+    haveSynth ? undefined : tokenId,
   );
-  const metadata = imageUrlTemplate
-    ? {
-        name: `#${tokenId.toString()}`,
-        description: "",
-        image: imageUrlTemplate.replace(/\{id\}/g, tokenId.toString()),
-        attributes: [],
-        raw: {},
-      }
+  const metadata = haveSynth
+    ? synthesizeTokenMetadata(tokenId, imageUrlTemplate, sampleImageUrl)
     : fetched;
   return (
     <NftCard
@@ -921,6 +940,7 @@ function ListingCardWithMetadata({
   seller,
   isERC1155,
   imageUrlTemplate,
+  sampleImageUrl,
 }: {
   nftContract: `0x${string}`;
   tokenId: bigint;
@@ -928,20 +948,16 @@ function ListingCardWithMetadata({
   seller: string;
   isERC1155: boolean;
   imageUrlTemplate?: string | null;
+  sampleImageUrl?: string | null;
 }) {
+  const haveSynth = !!imageUrlTemplate || !!sampleImageUrl;
   const { data: fetched } = useNftMetadata(
     nftContract,
-    imageUrlTemplate ? undefined : tokenId,
+    haveSynth ? undefined : tokenId,
     isERC1155,
   );
-  const metadata = imageUrlTemplate
-    ? {
-        name: `#${tokenId.toString()}`,
-        description: "",
-        image: imageUrlTemplate.replace(/\{id\}/g, tokenId.toString()),
-        attributes: [],
-        raw: {},
-      }
+  const metadata = haveSynth
+    ? synthesizeTokenMetadata(tokenId, imageUrlTemplate, sampleImageUrl)
     : fetched;
   return (
     <NftCard
