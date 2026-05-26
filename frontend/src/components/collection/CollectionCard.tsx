@@ -6,6 +6,10 @@ import { truncateAddress, formatNumber } from "@/lib/format";
 import { evmfsLabel } from "@/lib/evmfs";
 import { CollectionKind, isEvmfsKind, kindLabel } from "@/lib/abi/EVMFSCollectionRegistry";
 import type { RegisteredCollection } from "@/hooks/useRegistry";
+import {
+  usePageTurnSound,
+  usePaperHoverSound,
+} from "@/providers/SoundProvider";
 
 interface CollectionCardProps {
   collection: RegisteredCollection;
@@ -15,10 +19,18 @@ export function CollectionCard({ collection }: CollectionCardProps) {
   const supply = Number(collection.totalSupply);
   const previewTokenId = supply > 0 ? 1 : 0;
   const evmfs = isEvmfsKind(collection.kind);
+  const playPageTurn = usePageTurnSound();
+  const playPaperHover = usePaperHoverSound();
 
   return (
     <Link
       href={`/collection/${collection.nftContract}`}
+      onClick={(e) => {
+        if (!e.metaKey && !e.ctrlKey && !e.shiftKey && e.button === 0) {
+          playPageTurn();
+        }
+      }}
+      onPointerEnter={playPaperHover}
       className="stamp-shadow group block border border-border overflow-hidden bg-background-secondary hover:border-border-hover transition-colors"
     >
       <div className="aspect-square bg-background-tertiary">

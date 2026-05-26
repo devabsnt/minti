@@ -9,6 +9,10 @@ import { formatPrice, truncateAddress } from "@/lib/format";
 import type { EvmfsContract } from "@/lib/evmfs";
 import { useBrowseChain } from "@/providers/ChainProvider";
 import { getNativeSymbol } from "@/config/chains";
+import {
+  usePageTurnSound,
+  usePaperHoverSound,
+} from "@/providers/SoundProvider";
 
 interface EvmfsTokenCardProps {
   contractAddress: `0x${string}`;
@@ -45,11 +49,19 @@ export function EvmfsTokenCard({
     tokenId,
     evmfsContract
   );
+  const playPageTurn = usePageTurnSound();
+  const playPaperHover = usePaperHoverSound();
 
   return (
     <Link
       href={`/collection/${contractAddress}/${tokenId}`}
-      onClick={onClick}
+      onClick={(e) => {
+        onClick?.(e);
+        if (!e.metaKey && !e.ctrlKey && !e.shiftKey && e.button === 0) {
+          playPageTurn();
+        }
+      }}
+      onPointerEnter={playPaperHover}
       className="stamp-shadow group block border border-border overflow-hidden bg-background-secondary hover:border-border-hover transition-colors"
     >
       <div className="aspect-square bg-background-tertiary">

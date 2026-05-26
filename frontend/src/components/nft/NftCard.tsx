@@ -8,6 +8,10 @@ import type { NftMetadata } from "@/types/nft";
 import { useBrowseChain } from "@/providers/ChainProvider";
 import { useNftMetadata } from "@/hooks/useNftMetadata";
 import { getNativeSymbol } from "@/config/chains";
+import {
+  usePageTurnSound,
+  usePaperHoverSound,
+} from "@/providers/SoundProvider";
 
 interface NftCardProps {
   contractAddress: string;
@@ -48,10 +52,22 @@ export function NftCard({
   const effectiveMetadata =
     primaryFailed && fetchedMetadata ? fetchedMetadata : metadata;
   const showingFallback = primaryFailed && !!fetchedMetadata;
+  const playPageTurn = usePageTurnSound();
+  const playPaperHover = usePaperHoverSound();
+  const handleClick = (e: MouseEvent<HTMLAnchorElement>) => {
+    onClick?.(e);
+    // Page-turn on a plain left click. Modifier clicks (cmd / ctrl /
+    // shift / middle for new tab) skip the sound so we don't startle
+    // the user with audio on their current tab.
+    if (!e.metaKey && !e.ctrlKey && !e.shiftKey && e.button === 0) {
+      playPageTurn();
+    }
+  };
   return (
     <Link
       href={`/collection/${contractAddress}/${tokenId}`}
-      onClick={onClick}
+      onClick={handleClick}
+      onPointerEnter={playPaperHover}
       className="stamp-shadow group block border border-border overflow-hidden bg-background-secondary hover:border-border-hover transition-colors"
     >
       <NftImage

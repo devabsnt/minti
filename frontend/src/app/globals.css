@@ -36,6 +36,7 @@
 
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
+  --font-serif: var(--font-fraunces);
 }
 
 /* Body. The fixed-position pseudo-element layers a high-frequency
@@ -91,20 +92,81 @@ body > * {
    lifted slightly off the page. Lifts further on hover. Layered
    shadows give the warm under-light + soft ambient feel; tinted
    with the ink color so it never reads as a generic gray drop
-   shadow. */
+   shadow.
+
+   The faint inset ring inside each card mimics the stamp's inner
+   frame line - subtle but reinforces the postage-stamp metaphor.
+   Implemented as a box-shadow inset so it doesn't interfere with
+   the existing `border` or `bg` of the card. */
 .stamp-shadow {
   box-shadow:
+    inset 0 0 0 1px rgba(45, 36, 24, 0.08),
+    inset 0 0 0 5px transparent,
+    inset 0 0 0 6px rgba(45, 36, 24, 0.06),
     0 1px 0 rgba(45, 36, 24, 0.04),
-    0 2px 4px -1px rgba(45, 36, 24, 0.06),
-    0 6px 14px -4px rgba(45, 36, 24, 0.10);
-  transition: box-shadow 200ms ease, transform 200ms ease;
+    0 2px 4px -1px rgba(45, 36, 24, 0.08),
+    0 8px 18px -4px rgba(45, 36, 24, 0.14);
+  transition: box-shadow 220ms ease, transform 220ms ease;
 }
 .stamp-shadow:hover {
   box-shadow:
+    inset 0 0 0 1px rgba(45, 36, 24, 0.10),
+    inset 0 0 0 5px transparent,
+    inset 0 0 0 6px rgba(45, 36, 24, 0.08),
     0 1px 0 rgba(45, 36, 24, 0.06),
-    0 4px 8px -2px rgba(45, 36, 24, 0.08),
-    0 12px 28px -6px rgba(45, 36, 24, 0.14);
-  transform: translateY(-2px);
+    0 6px 12px -2px rgba(45, 36, 24, 0.10),
+    0 16px 36px -6px rgba(45, 36, 24, 0.20);
+  transform: translateY(-3px);
+}
+
+/* ── Stamp-serrated edges ────────────────────────────────────────
+   Hand-painted perforations along each edge. Four radial-gradient
+   layers, one per edge, each tiling a row of circles that match
+   the surrounding paper color. The circles appear as "bites" out
+   of the card. Looks like a real stamp without needing a heavy SVG
+   border-image dance.
+
+   Apply alongside the card's existing bg-background-secondary:
+   the .stamp-edge layer paints ON TOP, with circles that are the
+   same color as the body bg, so the perforations look like the
+   card was cut from a sheet.
+
+   Tunable via --perf-r (circle radius) and --perf-step (pitch). */
+.stamp-edge {
+  --perf-r: 5px;
+  --perf-step: 14px;
+  background-image:
+    radial-gradient(
+      circle var(--perf-r) at 50% 0,
+      var(--color-background) calc(var(--perf-r) - 0.5px),
+      transparent var(--perf-r)
+    ),
+    radial-gradient(
+      circle var(--perf-r) at 50% 100%,
+      var(--color-background) calc(var(--perf-r) - 0.5px),
+      transparent var(--perf-r)
+    ),
+    radial-gradient(
+      circle var(--perf-r) at 0 50%,
+      var(--color-background) calc(var(--perf-r) - 0.5px),
+      transparent var(--perf-r)
+    ),
+    radial-gradient(
+      circle var(--perf-r) at 100% 50%,
+      var(--color-background) calc(var(--perf-r) - 0.5px),
+      transparent var(--perf-r)
+    );
+  background-size:
+    var(--perf-step) calc(var(--perf-r) * 2),
+    var(--perf-step) calc(var(--perf-r) * 2),
+    calc(var(--perf-r) * 2) var(--perf-step),
+    calc(var(--perf-r) * 2) var(--perf-step);
+  background-repeat: repeat-x, repeat-x, repeat-y, repeat-y;
+  background-position:
+    50% 0,
+    50% 100%,
+    0 50%,
+    100% 50%;
 }
 
 /* ── Hairline divider with little circle endpoints ────────────────
@@ -231,47 +293,62 @@ body > * {
 
 /* ── Stamp-styled buttons ────────────────────────────────────────
    Primary buttons read as postage stamps: vermillion ground, double
-   inset ring (the "stamp frame"), gold-letter type, subtle ink-press
-   shadow, and a tiny rotation that picks up on hover. The slight
-   rotation is what sells the "stamp pressed on paper" feeling -
-   stamps are never perfectly straight. */
+   inset ring (the "stamp frame"), off-white ink type, layered drop
+   shadow + an "ink-pressed" inset shadow on top, and a slight
+   rotation that flips direction on hover. The shadow layering gives
+   the button real depth - it sits on the page like an object, not
+   a flat fill. */
 .stamp-button {
   position: relative;
   background: var(--color-mint);                /* vermillion */
   color: #fff5d6;                                /* off-white ink */
-  border: 1px solid rgba(45, 36, 24, 0.35);
+  border: 1px solid rgba(45, 36, 24, 0.45);
+  /* Layers, in render order:
+     1. Inset frame ring (stamp inner border)
+     2. Soft top highlight (paper light source)
+     3. Ink-press inset darkening at bottom edge
+     4. Solid "block" shadow (subtle 3D body)
+     5. Soft ambient shadow */
   box-shadow:
     inset 0 0 0 3px var(--color-mint),
-    inset 0 0 0 4px rgba(255, 245, 214, 0.55),  /* the inner stamp frame */
+    inset 0 0 0 4px rgba(255, 245, 214, 0.65),
     inset 0 0 0 5px var(--color-mint),
-    0 2px 0 rgba(45, 36, 24, 0.12),
-    0 4px 12px -2px rgba(45, 36, 24, 0.18);
+    inset 0 1px 0 rgba(255, 245, 214, 0.35),
+    inset 0 -2px 4px rgba(45, 36, 24, 0.25),
+    0 2px 0 rgba(45, 36, 24, 0.20),
+    0 4px 0 rgba(45, 36, 24, 0.10),
+    0 6px 14px -2px rgba(45, 36, 24, 0.25);
   transform: rotate(-0.6deg);
   transition: transform 180ms ease, box-shadow 180ms ease, background 180ms ease;
   letter-spacing: 0.03em;
+  text-shadow: 0 1px 0 rgba(45, 36, 24, 0.25);
 }
 .stamp-button:hover:not(:disabled) {
   background: var(--color-mint-dim);
-  transform: rotate(0.4deg) translateY(-1px);
+  transform: rotate(0.4deg) translateY(-2px);
   box-shadow:
     inset 0 0 0 3px var(--color-mint-dim),
-    inset 0 0 0 4px rgba(255, 245, 214, 0.7),
+    inset 0 0 0 4px rgba(255, 245, 214, 0.75),
     inset 0 0 0 5px var(--color-mint-dim),
-    0 3px 0 rgba(45, 36, 24, 0.14),
-    0 8px 18px -4px rgba(45, 36, 24, 0.22);
+    inset 0 1px 0 rgba(255, 245, 214, 0.4),
+    inset 0 -2px 4px rgba(45, 36, 24, 0.30),
+    0 3px 0 rgba(45, 36, 24, 0.22),
+    0 6px 0 rgba(45, 36, 24, 0.12),
+    0 12px 22px -4px rgba(45, 36, 24, 0.32);
 }
 .stamp-button:active:not(:disabled) {
-  transform: rotate(-0.2deg) translateY(0);
+  transform: rotate(-0.2deg) translateY(1px);
   box-shadow:
     inset 0 0 0 3px var(--color-mint-dark),
-    inset 0 0 0 4px rgba(255, 245, 214, 0.5),
+    inset 0 0 0 4px rgba(255, 245, 214, 0.55),
     inset 0 0 0 5px var(--color-mint-dark),
-    0 1px 0 rgba(45, 36, 24, 0.10),
-    0 2px 6px -1px rgba(45, 36, 24, 0.14);
+    inset 0 2px 5px rgba(45, 36, 24, 0.35),
+    0 1px 0 rgba(45, 36, 24, 0.18),
+    0 2px 4px rgba(45, 36, 24, 0.18);
 }
 
-/* Secondary stamp: gold leaf + sepia text, for "View" / "Cancel"
-   style calls. Same rotation/lift dynamics. */
+/* Secondary stamp: cream paper + sepia text. Same depth treatment
+   tuned down so primary still wins the eye. */
 .stamp-button-secondary {
   position: relative;
   background: var(--color-background-secondary);
@@ -279,26 +356,39 @@ body > * {
   border: 1px solid var(--color-border);
   box-shadow:
     inset 0 0 0 3px var(--color-background-secondary),
-    inset 0 0 0 4px rgba(45, 36, 24, 0.10),
+    inset 0 0 0 4px rgba(45, 36, 24, 0.18),
     inset 0 0 0 5px var(--color-background-secondary),
-    0 2px 0 rgba(45, 36, 24, 0.06),
-    0 4px 10px -2px rgba(45, 36, 24, 0.10);
+    inset 0 1px 0 rgba(255, 245, 214, 0.45),
+    inset 0 -2px 4px rgba(45, 36, 24, 0.10),
+    0 2px 0 rgba(45, 36, 24, 0.12),
+    0 4px 0 rgba(45, 36, 24, 0.06),
+    0 6px 12px -2px rgba(45, 36, 24, 0.16);
   transform: rotate(0.5deg);
   transition: transform 180ms ease, box-shadow 180ms ease, background 180ms ease;
   letter-spacing: 0.02em;
 }
 .stamp-button-secondary:hover:not(:disabled) {
   background: var(--color-background-tertiary);
-  transform: rotate(-0.3deg) translateY(-1px);
+  transform: rotate(-0.3deg) translateY(-2px);
   box-shadow:
     inset 0 0 0 3px var(--color-background-tertiary),
-    inset 0 0 0 4px rgba(45, 36, 24, 0.18),
+    inset 0 0 0 4px rgba(45, 36, 24, 0.22),
     inset 0 0 0 5px var(--color-background-tertiary),
-    0 3px 0 rgba(45, 36, 24, 0.08),
-    0 6px 14px -3px rgba(45, 36, 24, 0.14);
+    inset 0 1px 0 rgba(255, 245, 214, 0.5),
+    inset 0 -2px 4px rgba(45, 36, 24, 0.12),
+    0 3px 0 rgba(45, 36, 24, 0.14),
+    0 6px 0 rgba(45, 36, 24, 0.07),
+    0 10px 18px -3px rgba(45, 36, 24, 0.20);
 }
 .stamp-button-secondary:active:not(:disabled) {
-  transform: rotate(0.2deg) translateY(0);
+  transform: rotate(0.2deg) translateY(1px);
+  box-shadow:
+    inset 0 0 0 3px var(--color-background-tertiary),
+    inset 0 0 0 4px rgba(45, 36, 24, 0.25),
+    inset 0 0 0 5px var(--color-background-tertiary),
+    inset 0 2px 5px rgba(45, 36, 24, 0.20),
+    0 1px 0 rgba(45, 36, 24, 0.10),
+    0 2px 4px rgba(45, 36, 24, 0.10);
 }
 
 /* ── Long-tail card scatter ────────────────────────────────────────

@@ -28,6 +28,10 @@ import {
 } from "@/hooks/useFeaturedCollections";
 import { useHiddenCollections } from "@/hooks/useHiddenCollections";
 import { useDebounce } from "@/hooks/useDebounce";
+import {
+  usePageTurnSound,
+  usePaperHoverSound,
+} from "@/providers/SoundProvider";
 
 /**
  * Discover page. Three sections shown in order:
@@ -413,26 +417,39 @@ function FeaturedCard({ entry }: { entry: FeaturedCollectionEntry }) {
   const uniqueHolders = collection.uniqueHolders ?? 0;
   const supply = collection.totalSupply ? Number(collection.totalSupply) : 0;
   const blurb = entry.blurb?.trim();
+  const playPageTurn = usePageTurnSound();
+  const playPaperHover = usePaperHoverSound();
 
   return (
     <a
       href={`/collection/${collection.address}`}
+      onClick={(e) => {
+        if (!e.metaKey && !e.ctrlKey && !e.shiftKey && e.button === 0) {
+          playPageTurn();
+        }
+      }}
+      onPointerEnter={playPaperHover}
       className="featured-breathe stamp-shadow group relative block border overflow-hidden bg-background-secondary transition-all"
     >
       <div className="relative flex gap-4 p-4 items-start">
-        {/* Mascot + FEATURED label in the top-right. */}
+        {/* Postmark stamp + FEATURED label in the top-right. The
+            postmark is the same circular "baolings" seal used on the
+            postcard NFTs; rendered at a slight rotation and reduced
+            opacity so it reads as stamped onto the paper instead of
+            pasted on top. */}
         <div
-          className="absolute top-2 right-3 flex items-center gap-1.5 z-10"
+          className="absolute top-3 right-4 flex items-center gap-2 z-10 pointer-events-none"
           aria-hidden
         >
+          <span className="stamp-pill">Featured</span>
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img
-            src="/mintiNoWords.png"
+            src="/postmark.png"
             alt=""
-            className="w-12 h-12 opacity-90 drop-shadow"
+            className="w-16 h-16 opacity-80"
+            style={{ transform: "rotate(-8deg)" }}
             loading="lazy"
           />
-          <span className="stamp-pill">Featured</span>
         </div>
 
         <div className="w-28 h-28 sm:w-32 sm:h-32 overflow-hidden border border-border bg-background-tertiary flex-shrink-0">
@@ -492,10 +509,18 @@ function LongTailCard({ collection }: { collection: ApiCollection }) {
   const transferCount = collection.transferCount ?? 0;
   const uniqueHolders = collection.uniqueHolders ?? 0;
   const supply = collection.totalSupply ? Number(collection.totalSupply) : 0;
+  const playPageTurn = usePageTurnSound();
+  const playPaperHover = usePaperHoverSound();
 
   return (
     <a
       href={`/collection/${collection.address}`}
+      onClick={(e) => {
+        if (!e.metaKey && !e.ctrlKey && !e.shiftKey && e.button === 0) {
+          playPageTurn();
+        }
+      }}
+      onPointerEnter={playPaperHover}
       className="stamp-shadow group block border border-border overflow-hidden bg-background-secondary hover:border-border-hover transition-colors"
     >
       <NftImage
@@ -621,10 +646,18 @@ function TrendingPodiumCard({
   const collageRow = collageImages.length > 0
     ? collageImages.concat(collageImages)
     : [];
+  const playPageTurn = usePageTurnSound();
+  const playPaperHover = usePaperHoverSound();
 
   return (
     <a
       href={`/collection/${collection.address}`}
+      onClick={(e) => {
+        if (!e.metaKey && !e.ctrlKey && !e.shiftKey && e.button === 0) {
+          playPageTurn();
+        }
+      }}
+      onPointerEnter={playPaperHover}
       // Outer: animated metal-gradient wrapper. `p-1` becomes the visible
       // 4px shimmering border around the inner card.
       className={`group collage-drift-on-hover block ${tier.borderClass} hover:shadow-xl ${tier.ring} transition-all`}
@@ -879,10 +912,18 @@ function TrendingHeroCard({
   const name = collection.name || collection.address.slice(0, 10);
   const symbol = collection.symbol || "";
   const transferCount = collection.transferCount ?? 0;
+  const playPageTurn = usePageTurnSound();
+  const playPaperHover = usePaperHoverSound();
 
   return (
     <a
       href={`/collection/${collection.address}`}
+      onClick={(e) => {
+        if (!e.metaKey && !e.ctrlKey && !e.shiftKey && e.button === 0) {
+          playPageTurn();
+        }
+      }}
+      onPointerEnter={playPaperHover}
       className="stamp-shadow group relative flex gap-4 items-center p-4 border border-border bg-background-secondary hover:border-border-hover transition-colors"
     >
       <div className="flex flex-col items-center w-11 flex-shrink-0">

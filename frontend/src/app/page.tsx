@@ -7,7 +7,10 @@ import { Button } from "@/components/ui/Button";
 export default function HomePage() {
   return (
     <div className="max-w-7xl mx-auto px-4">
-      {/* Hero */}
+      {/* Hero. Title and tagline use the serif family so they ladder
+          cleanly with the Nº rank numerals used elsewhere. The cream
+          paper backdrop + serif headline reads as "editorial album"
+          rather than tech demo. */}
       <section className="flex flex-col items-center text-center pt-20 pb-24 md:pt-28 md:pb-32">
         <Image
           src="/mintiSVG.svg"
@@ -18,14 +21,14 @@ export default function HomePage() {
           priority
         />
 
-        <h1 className="text-5xl md:text-7xl font-bold tracking-tight leading-[1.05] mb-6 max-w-3xl">
+        <h1 className="font-serif text-5xl md:text-7xl font-bold tracking-tight leading-[1.05] mb-6 max-w-3xl">
           The home for{" "}
-          <span className="text-mint">on-chain</span> collections
+          <span className="text-mint italic">on-chain</span> collections
         </h1>
 
-        <p className="text-foreground-secondary text-lg max-w-xl mb-10">
-          Launch NFT collections that live entirely on chain via EVMFS. No
-          hosting, no expiry.
+        <p className="font-serif text-foreground-secondary text-xl max-w-xl mb-10 leading-relaxed">
+          Launch NFT collections that live entirely on chain via EVMFS.
+          No hosting, no expiry.
         </p>
 
         <div className="flex flex-wrap gap-3 justify-center">
@@ -40,17 +43,20 @@ export default function HomePage() {
         </div>
       </section>
 
-      {/* Stats */}
-      <section className="grid grid-cols-1 md:grid-cols-3 gap-4 py-12 border-t border-border">
+      {/* Stats. Three stamp cards, centered text, all three same
+          treatment so the row reads as a triptych. */}
+      <section className="grid grid-cols-1 md:grid-cols-3 gap-5 py-12 border-t border-border">
         <StatCard label="Storage" value="On chain" />
         <StatCard label="Permanence" value="Forever" />
         <StatCard label="Hosting" value="$0/mo" />
       </section>
 
-      {/* How it works */}
+      {/* How it works. */}
       <section className="py-20 border-t border-border">
         <div className="text-center mb-16">
-          <h2 className="text-3xl font-bold tracking-tight">How it works</h2>
+          <h2 className="font-serif text-4xl font-bold tracking-tight">
+            How it works
+          </h2>
           <p className="text-foreground-secondary mt-3 max-w-md mx-auto">
             Three steps. No backend. No subscription.
           </p>
@@ -80,11 +86,11 @@ export default function HomePage() {
 
 function StatCard({ label, value }: { label: string; value: string }) {
   return (
-    <div className="border border-border p-6 bg-background-secondary">
-      <div className="text-xs text-foreground-secondary uppercase tracking-wider mb-2">
+    <div className="stamp-shadow border border-border p-8 bg-background-secondary text-center">
+      <div className="text-xs text-foreground-secondary uppercase tracking-[0.2em] mb-3 font-serif">
         {label}
       </div>
-      <div className="text-2xl font-semibold">{value}</div>
+      <div className="font-serif text-3xl font-bold">{value}</div>
     </div>
   );
 }
@@ -100,8 +106,11 @@ function StepCard({
 }) {
   return (
     <div className="flex flex-col items-start text-left">
-      <div className="text-mint text-sm font-mono mb-4">0{step}</div>
-      <h3 className="text-lg font-semibold mb-2">{title}</h3>
+      <div className="font-serif text-mint text-sm mb-4">
+        <span className="text-foreground-secondary">Nº</span>{" "}
+        <span className="font-bold">0{step}</span>
+      </div>
+      <h3 className="font-serif text-xl font-semibold mb-3">{title}</h3>
       <p className="text-sm text-foreground-secondary leading-relaxed">
         {description}
       </p>
