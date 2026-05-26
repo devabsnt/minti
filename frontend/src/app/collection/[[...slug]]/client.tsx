@@ -880,11 +880,29 @@ function TokenDetailPage({
 function OwnedCollectionCard({
   contractAddress,
   tokenId,
+  imageUrlTemplate,
 }: {
   contractAddress: `0x${string}`;
   tokenId: bigint;
+  imageUrlTemplate?: string | null;
 }) {
-  const { data: metadata } = useNftMetadata(contractAddress, tokenId);
+  // When we have a template, skip the per-token metadata fetch entirely
+  // — synthesize the image URL by substituting the tokenId. This is what
+  // kills the scatter-502 storm for r3tards-style collections, since
+  // scatter's JSON endpoint is CORS-blocked but its image endpoint
+  // accepts ?tokenId=N directly.
+  const { data: fetched } = useNftMetadata(
+    contractAddress,
+    imageUrlTemplate ? undefined : tokenId,
+  );
+  const metadata = imageUrlTemplate
+    ? {
+        name: `#${tokenId.toString()}`,
+        description: "",
+        image: imageUrlTemplate.replace(/\{id\}/g, tokenId.toString()),
+        attributes: [],
+      }
+    : fetched;
   return (
     <NftCard
       contractAddress={contractAddress}
@@ -900,15 +918,28 @@ function ListingCardWithMetadata({
   price,
   seller,
   isERC1155,
+  imageUrlTemplate,
 }: {
   nftContract: `0x${string}`;
   tokenId: bigint;
   price: bigint;
   seller: string;
   isERC1155: boolean;
+  imageUrlTemplate?: string | null;
 }) {
-  const { data: metadata } = useNftMetadata(nftContract, tokenId, isERC1155);
-
+  const { data: fetched } = useNftMetadata(
+    nftContract,
+    imageUrlTemplate ? undefined : tokenId,
+    isERC1155,
+  );
+  const metadata = imageUrlTemplate
+    ? {
+        name: `#${tokenId.toString()}`,
+        description: "",
+        image: imageUrlTemplate.replace(/\{id\}/g, tokenId.toString()),
+        attributes: [],
+      }
+    : fetched;
   return (
     <NftCard
       contractAddress={nftContract}
