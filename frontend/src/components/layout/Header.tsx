@@ -3,7 +3,6 @@
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { ChainSelector } from "./ChainSelector";
 import { ConnectButton } from "../wallet/ConnectButton";
 import { GlobalSearch } from "./GlobalSearch";
 
@@ -69,9 +68,6 @@ export function Header() {
 
         {/* Right side */}
         <div className="flex items-center gap-2 sm:gap-3 flex-shrink-0">
-          <div className="hidden sm:block">
-            <ChainSelector />
-          </div>
           <ConnectButton />
           <button
             type="button"
@@ -131,9 +127,6 @@ export function Header() {
                 Generator
               </Link>
             </nav>
-            <div className="sm:hidden pt-2 border-t border-border">
-              <ChainSelector />
-            </div>
           </div>
         </div>
       )}

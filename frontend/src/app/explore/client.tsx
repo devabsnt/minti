@@ -19,6 +19,7 @@ import {
 } from "@/hooks/useRegistry";
 import {
   useIndexerCollections,
+  useCollectionSparkline,
   type ApiCollection,
   type SortKey,
 } from "@/hooks/useIndexerCollections";
@@ -45,7 +46,11 @@ import { kindTier } from "@/lib/abi/EVMFSCollectionRegistry";
 export function ExploreClient() {
   const router = useRouter();
   const [search, setSearch] = useState("");
-  const [showAll, setShowAll] = useState(false);
+  // Default: include long-tail (tier 1) so smaller / newer collections
+  // surface alongside the explore-eligible (tier 2) ones. The user can
+  // toggle to "Established only" to filter back to tier 2 if they want
+  // a stricter view.
+  const [showAll, setShowAll] = useState(true);
   const [sortKey, setSortKey] = useState<SortKey>("trending");
   const [longTailPage, setLongTailPage] = useState(0);
   const [registryPage, setRegistryPage] = useState(0);
@@ -352,14 +357,16 @@ export function ExploreClient() {
               <label className="text-xs text-foreground-secondary flex items-center gap-1.5 cursor-pointer select-none">
                 <input
                   type="checkbox"
-                  checked={showAll}
+                  checked={!showAll}
                   onChange={(e) => {
-                    setShowAll(e.target.checked);
+                    // Checkbox represents "established only" — when
+                    // ticked, we filter to tier 2 (drops the long-tail).
+                    setShowAll(!e.target.checked);
                     setLongTailPage(0);
                   }}
                   className="accent-mint"
                 />
-                Show long-tail
+                Established only
               </label>
             </div>
 
@@ -558,23 +565,25 @@ function TrendingPodiumCard({
   const tier = PODIUM_TIERS[rank];
 
   const collageImages = useMemo(
-    () => buildCollageImages(collection, 5),
+    () => buildCollageImages(collection, 8),
     [collection],
   );
-  // The drift animation needs at least two distinct images to look like
-  // a scroll rather than a single image sliding off-screen. For the
-  // shared-image fallback (`buildCollageImages` returning one URL) we
-  // skip the animation entirely.
+  // We have two visual modes:
+  //  - "driftable": multiple distinct images. Each tile is rendered at
+  //    full card height with its natural aspect ratio (h-full w-auto)
+  //    so the artwork is never cropped vertically. We double the list
+  //    so the scroll animation can loop seamlessly at -50%.
+  //  - "single-image" fallback: one cover-fitted image filling the bar,
+  //    slowly scrolled on hover (same as before).
   const driftable = collageImages.length > 1;
-  // Doubled list so the animation can loop seamlessly: at the -50%
-  // endpoint the row visually matches the start position (each tile
-  // appears at the same x-offset as its duplicate one cycle later).
-  const collageRow = driftable
+  // Both modes duplicate the source list so translateX(-50%) seamlessly
+  // returns to the starting visual state on each animation cycle. For
+  // the single-image fallback this means rendering the same image
+  // twice — the second copy lands exactly where the first started, so
+  // there's no visible jump when the loop resets.
+  const collageRow = collageImages.length > 0
     ? collageImages.concat(collageImages)
-    : collageImages;
-  // Each tile takes `1 / collageRow.length` of the doubled row width,
-  // which equals `1 / collageImages.length` of the visible card width.
-  const tileWidthPct = collageRow.length > 0 ? 100 / collageRow.length : 100;
+    : [];
 
   return (
     <a
@@ -588,13 +597,9 @@ function TrendingPodiumCard({
             Plain <img> tags with native lazy loading: no watchdog
             timers, no fallback ladder, no React state — just decoration.
             If a single tile fails, the background simply has a gap,
-            which the dimming overlay hides. The track is twice as wide
-            as the visible card and slides slowly to the left on hover. */}
+            which the dimming overlay hides. */}
         <div className="absolute inset-0 overflow-hidden pointer-events-none select-none">
-          <div
-            className="collage-drift-track flex h-full"
-            style={{ width: driftable ? "200%" : "100%" }}
-          >
+          <div className="collage-drift-track flex h-full w-max">
             {collageRow.map((url, i) => (
               // eslint-disable-next-line @next/next/no-img-element
               <img
@@ -607,8 +612,13 @@ function TrendingPodiumCard({
                 // eslint-disable-next-line @typescript-eslint/no-explicit-any
                 {...({ fetchpriority: "low" } as any)}
                 referrerPolicy="no-referrer"
-                className="h-full object-cover flex-shrink-0"
-                style={{ width: `${tileWidthPct}%` }}
+                // driftable: keep natural aspect ratio, height = bar.
+                // single-image: cover the whole bar (no letterboxing).
+                className={
+                  driftable
+                    ? "h-full w-auto flex-shrink-0 object-contain"
+                    : "h-full w-screen max-w-none flex-shrink-0 object-cover"
+                }
               />
             ))}
           </div>
@@ -639,12 +649,27 @@ function TrendingPodiumCard({
             </div>
           </div>
           <div className="flex-1 min-w-0 flex flex-col gap-1">
-            <div className="text-xl sm:text-2xl font-bold truncate">{name}</div>
-            {symbol && (
-              <div className="text-sm text-foreground-secondary truncate">
-                {symbol}
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <div className="text-xl sm:text-2xl font-bold truncate">
+                  {name}
+                </div>
+                {symbol && (
+                  <div className="text-sm text-foreground-secondary truncate">
+                    {symbol}
+                  </div>
+                )}
               </div>
-            )}
+              <div
+                className="flex-shrink-0 flex flex-col items-end gap-0.5"
+                title="Activity in the last 24 hours"
+              >
+                <ActivitySparkline contractAddress={collection.address} />
+                <span className="text-[10px] uppercase tracking-wider text-foreground-secondary/60">
+                  24h
+                </span>
+              </div>
+            </div>
             <div className="flex flex-wrap items-center gap-x-4 gap-y-1 mt-2 text-sm">
               <span>
                 <span className="text-mint font-medium">
@@ -674,6 +699,69 @@ function TrendingPodiumCard({
         </div>
       </div>
     </a>
+  );
+}
+
+/**
+ * Tiny inline 24-hour activity sparkline. Renders a single polyline +
+ * filled area as SVG — no charting library, no per-render layout work
+ * beyond a single map over the bucket array. The Y axis auto-scales to
+ * the max bucket so even a quiet collection (peak of 3) still shows a
+ * readable shape. Returns null while loading or when there's no data.
+ */
+function ActivitySparkline({
+  contractAddress,
+  width = 96,
+  height = 28,
+  colorClass = "text-mint",
+}: {
+  contractAddress: string;
+  width?: number;
+  height?: number;
+  colorClass?: string;
+}) {
+  const { data } = useCollectionSparkline(contractAddress, 24);
+  const buckets = data?.buckets ?? [];
+  if (buckets.length < 2) return null;
+
+  const max = Math.max(1, ...buckets.map((b) => b.count));
+  const padX = 1;
+  const padY = 2;
+  const innerW = width - padX * 2;
+  const innerH = height - padY * 2;
+  const xStep = buckets.length > 1 ? innerW / (buckets.length - 1) : 0;
+  const points = buckets.map((b, i) => {
+    const x = padX + i * xStep;
+    // Flip Y because SVG origin is top-left.
+    const y = padY + innerH - (b.count / max) * innerH;
+    return [x, y] as const;
+  });
+
+  const linePath = points
+    .map(([x, y], i) => `${i === 0 ? "M" : "L"}${x.toFixed(1)} ${y.toFixed(1)}`)
+    .join(" ");
+  // Closed-path for the fill: down to baseline → back to start.
+  const fillPath = `${linePath} L${points[points.length - 1][0].toFixed(1)} ${(height - padY).toFixed(1)} L${points[0][0].toFixed(1)} ${(height - padY).toFixed(1)} Z`;
+
+  return (
+    <svg
+      width={width}
+      height={height}
+      viewBox={`0 0 ${width} ${height}`}
+      className={`${colorClass} block`}
+      aria-label="24-hour activity"
+      role="img"
+    >
+      <path d={fillPath} fill="currentColor" opacity="0.15" />
+      <path
+        d={linePath}
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.5"
+        strokeLinejoin="round"
+        strokeLinecap="round"
+      />
+    </svg>
   );
 }
 

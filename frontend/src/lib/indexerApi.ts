@@ -121,3 +121,12 @@ export interface ApiTokensResponse {
 export interface ApiActivityResponse {
   activity: ApiActivity[];
 }
+
+export interface ApiSparklineBucket {
+  ts: string; // ISO timestamp at the start of the hour
+  count: number;
+}
+
+export interface ApiSparklineResponse {
+  buckets: ApiSparklineBucket[];
+}

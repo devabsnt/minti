@@ -8,6 +8,7 @@ import {
   type ApiCollectionsResponse,
   type ApiActivityResponse,
   type ApiTokensResponse,
+  type ApiSparklineResponse,
 } from "@/lib/indexerApi";
 
 /**
@@ -98,6 +99,27 @@ export function useIndexerCollectionActivity(
       indexerFetch<ApiActivityResponse>(`api/collections/${address!.toLowerCase()}/activity`, {
         limit,
       }),
+  });
+}
+
+/**
+ * Hourly activity buckets for the last N hours. Drives the trending
+ * podium's inline sparkline. Stays fresh for a couple of minutes since
+ * the underlying counts shift continuously.
+ */
+export function useCollectionSparkline(
+  address: string | undefined,
+  hours = 24,
+) {
+  return useQuery({
+    queryKey: ["indexer-collection-sparkline", address?.toLowerCase(), hours],
+    enabled: !!address && /^0x[0-9a-fA-F]{40}$/.test(address),
+    staleTime: 2 * 60 * 1000,
+    queryFn: () =>
+      indexerFetch<ApiSparklineResponse>(
+        `api/collections/${address!.toLowerCase()}/sparkline`,
+        { hours },
+      ),
   });
 }
 

@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import { and, asc, desc, eq, gte, ilike, isNotNull, or, sql } from "drizzle-orm";
 import { z } from "zod";
-import { db } from "../../db/client.js";
+import { db, rawSql } from "../../db/client.js";
 import { activity, collections, tokens } from "../../db/schema.js";
 
 /**
@@ -209,4 +209,60 @@ collectionsRoutes.get("/:address/activity", async (c) => {
     .limit(limit);
 
   return c.json({ activity: rows });
+});
+
+const sparklineSchema = z.object({
+  hours: z.coerce.number().int().min(1).max(168).optional().default(24),
+});
+
+/**
+ * Hourly activity buckets for the last N hours. Drives the inline
+ * sparkline on the trending podium. Returns one bucket per hour,
+ * zero-filled — even hours with no activity get an entry so the front
+ * end can render a flat segment without doing date math itself.
+ *
+ * Counts every event row (transfers, mints, sales) — the goal is "is
+ * this collection busy right now," not a specific event-type breakdown.
+ */
+collectionsRoutes.get("/:address/sparkline", async (c) => {
+  const address = c.req.param("address").toLowerCase();
+  if (!/^0x[0-9a-f]{40}$/.test(address)) {
+    return c.json({ error: "Invalid address" }, 400);
+  }
+  const parsed = sparklineSchema.safeParse(c.req.query());
+  if (!parsed.success) {
+    return c.json({ error: "Invalid query parameters", detail: parsed.error.flatten() }, 400);
+  }
+  const { hours } = parsed.data;
+
+  // generate_series produces every hour bucket in the window so empty
+  // hours appear as zeros (a LEFT JOIN against the activity aggregation
+  // takes care of the actual values). All buckets are aligned to
+  // hour boundaries via date_trunc.
+  const rows = await rawSql.unsafe<{ ts: Date; count: number }[]>(`
+    WITH buckets AS (
+      SELECT generate_series(
+        date_trunc('hour', NOW()) - (($1::int - 1) * INTERVAL '1 hour'),
+        date_trunc('hour', NOW()),
+        INTERVAL '1 hour'
+      ) AS ts
+    ),
+    counts AS (
+      SELECT
+        date_trunc('hour', timestamp) AS ts,
+        COUNT(*)::int AS count
+      FROM activity
+      WHERE contract = $2
+        AND timestamp > NOW() - ($1::int * INTERVAL '1 hour')
+      GROUP BY ts
+    )
+    SELECT b.ts AS ts, COALESCE(c.count, 0)::int AS count
+      FROM buckets b
+ LEFT JOIN counts c USING (ts)
+  ORDER BY b.ts ASC
+  `, [hours, address]);
+
+  return c.json({
+    buckets: rows.map((r) => ({ ts: r.ts.toISOString(), count: r.count })),
+  });
 });

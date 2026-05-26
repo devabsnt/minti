@@ -36,18 +36,37 @@ export function ConnectButton() {
                 Wrong Network
               </button>
             ) : (
-              <div className="flex items-center gap-2">
+              // Connected view. The address itself is a Link to the
+              // user's wallet profile page. The small chevron next to
+              // it opens RainbowKit's account modal (disconnect, copy,
+              // chain switch). Two distinct affordances on one
+              // visually-compact control.
+              <div className="flex items-center gap-1">
                 <Link
                   href={`/wallet/${account.address}`}
-                  className="text-sm text-foreground-secondary hover:text-mint transition-colors"
+                  className="text-sm text-foreground-secondary hover:text-mint transition-colors px-2 py-2"
                 >
                   {account.displayName}
                 </Link>
                 <button
                   onClick={openAccountModal}
-                  className="px-3 py-2 text-sm border border-border rounded-lg hover:border-mint/50 hover:text-mint transition-colors"
+                  className="p-1.5 text-foreground-secondary hover:text-mint transition-colors"
+                  aria-label="Account menu"
+                  title="Account menu"
                 >
-                  Wallet
+                  <svg
+                    xmlns="http://www.w3.org/2000/svg"
+                    viewBox="0 0 20 20"
+                    fill="currentColor"
+                    className="w-4 h-4"
+                    aria-hidden
+                  >
+                    <path
+                      fillRule="evenodd"
+                      d="M5.23 7.21a.75.75 0 0 1 1.06.02L10 11.168l3.71-3.938a.75.75 0 1 1 1.08 1.04l-4.24 4.5a.75.75 0 0 1-1.08 0l-4.24-4.5a.75.75 0 0 1 .02-1.06Z"
+                      clipRule="evenodd"
+                    />
+                  </svg>
                 </button>
               </div>
             )}
