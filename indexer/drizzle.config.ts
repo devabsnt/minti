@@ -1,19 +1,17 @@
 import { defineConfig } from "drizzle-kit";
 
-if (!process.env.DATABASE_URL) {
-  // drizzle-kit reads this config at CLI time. Fail loud rather than
-  // silently use undefined.
-  throw new Error("DATABASE_URL is required for drizzle-kit operations");
-}
-
+// `drizzle-kit generate` (offline migration generation) doesn't need a
+// DB connection — it just diffs schema.ts against the migrations folder.
+// Only `push` and `studio` need DATABASE_URL. Default to a placeholder
+// so `generate` works locally without a real DB; the runtime migrator
+// reads DATABASE_URL itself.
 export default defineConfig({
   schema: "./src/db/schema.ts",
   out: "./drizzle",
   dialect: "postgresql",
   dbCredentials: {
-    url: process.env.DATABASE_URL,
+    url: process.env.DATABASE_URL ?? "postgres://placeholder",
   },
-  // Verbose output is helpful when iterating on the schema.
   verbose: true,
   strict: true,
 });

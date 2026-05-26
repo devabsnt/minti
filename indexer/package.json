@@ -6,7 +6,7 @@
   "description": "Live Monad chain indexer for minti.art. Continuous polling via public RPCs, Postgres source of truth, Hono API.",
   "scripts": {
     "dev": "tsx watch src/index.ts",
-    "start": "drizzle-kit push --force && tsx src/index.ts",
+    "start": "tsx src/index.ts",
     "build": "tsc --noEmit",
     "db:generate": "drizzle-kit generate",
     "db:push": "drizzle-kit push",
