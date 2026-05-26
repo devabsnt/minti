@@ -59,21 +59,31 @@ collectionsRoutes.get("/", async (c) => {
   }
   const where = and(...whereClauses)!;
 
-  // Composite trending score:
-  //   - log-scaled secondary transfers (non-mint movement) — actual market activity
-  //   - log-scaled unique_senders weighted highest — diversity of sellers is
-  //     the strongest "real market" signal. An airdrop has 1 sender; a
-  //     traded collection has hundreds.
-  //   - log-scaled unique_holders for breadth
-  //   - penalty when mint_count/transfer_count ratio is very high (airdrop
-  //     signature: lots of transfers but they're all mint events)
+  // Composite trending score with multiplicative diversity floor.
   //
-  // Logs prevent any single huge number from dominating. Weights tuned
-  // so unique_senders carries more than raw transfer count.
+  // The previous additive formula let high-transfer / low-diversity
+  // collections (airdrops with 1 sender, LP-like contracts) outrank
+  // genuine markets like skrumpeys and r3tards because their secondary-
+  // transfer counts dwarfed everything else. Multiplying by a diversity
+  // factor caps low-sender collections at a fraction of their potential
+  // score: a 1-sender airdrop gets ~3% of the score it would have at
+  // 30+ senders.
+  //
+  //   activity = LN(1 + secondary_transfers) * 2.0   // actual movement
+  //            + LN(1 + unique_senders)      * 2.5   // diversity (also additive)
+  //            + LN(1 + unique_holders)      * 1.0   // breadth
+  //
+  //   diversity_factor = LEAST(1, unique_senders / 30)
+  //     // 0..1, full at 30+ unique sellers
+  //
+  //   mint_penalty = 5 if >85% mints, 2 if >65%
+  //
+  //   score = activity * diversity_factor - mint_penalty
   const trendingScoreSql = sql`(
-    LN(1 + GREATEST(0, ${collections.transferCount} - ${collections.mintCount})) * 2.0
-    + LN(1 + ${collections.uniqueSenders}) * 2.5
-    + LN(1 + ${collections.uniqueHolders}) * 1.0
+    (LN(1 + GREATEST(0, ${collections.transferCount} - ${collections.mintCount})) * 2.0
+      + LN(1 + ${collections.uniqueSenders}) * 2.5
+      + LN(1 + ${collections.uniqueHolders}) * 1.0)
+    * LEAST(1.0, ${collections.uniqueSenders}::float / 30.0)
     - CASE
         WHEN ${collections.transferCount} > 0
          AND ${collections.mintCount}::float / GREATEST(${collections.transferCount}, 1) > 0.85 THEN 5.0
