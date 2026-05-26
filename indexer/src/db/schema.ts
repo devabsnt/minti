@@ -69,7 +69,9 @@ export const tokens = pgTable("tokens", {
 }, (t) => ({
   pk: primaryKey({ columns: [t.contract, t.tokenId] }),
   ownerIdx: index("tokens_owner_idx").on(t.owner),
-  contractIdx: index("tokens_contract_idx").on(t.contract),
+  // Removed `tokens_contract_idx` — redundant with the composite PK
+  // (Postgres uses the PK index for `WHERE contract = X` queries since
+  // `contract` is the leading column). Saves ~1 GB.
 }));
 
 // ── on-chain activity (event log) ──────────────────────────────────
@@ -87,9 +89,10 @@ export const activity = pgTable("activity", {
 }, (t) => ({
   pk: primaryKey({ columns: [t.txHash, t.logIndex] }),
   contractIdx: index("activity_contract_idx").on(t.contract, t.blockNumber),
-  fromIdx: index("activity_from_idx").on(t.fromAddr),
-  toIdx: index("activity_to_idx").on(t.toAddr),
   blockIdx: index("activity_block_idx").on(t.blockNumber),
+  // Removed `activity_from_idx` and `activity_to_idx` — neither was wired
+  // to any API endpoint and they were costing ~3-4 GB combined. Add back
+  // when we surface "wallet's transfer history" queries.
 }));
 
 // ── crawler bookkeeping ────────────────────────────────────────────

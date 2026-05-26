@@ -4,8 +4,8 @@ import { startEnrichment } from "./enrichment.js";
 import { startPollLoop } from "./poll.js";
 import { pruneOldActivity, startPruneLoop } from "./pruning.js";
 import { RpcSource } from "./rpc-source.js";
-import { startStatsLoop } from "./stats.js";
-import { startTierLoop } from "./tier.js";
+import { refreshStats, startStatsLoop } from "./stats.js";
+import { refreshTiers, startTierLoop } from "./tier.js";
 
 /**
  * Crawler orchestrator. Six tasks run inside one Node process:
@@ -67,7 +67,27 @@ export async function startCrawler() {
     console.log("[crawler] bootstrap skipped (RUN_BOOTSTRAP=0)");
   }
 
-  // 2-6 run concurrently. Each catches its own errors internally and
+  // 2. One-shot stats refresh + tier classification, sequential, BEFORE
+  //    the periodic loops start. Guarantees the API serves fresh tier
+  //    distribution to the first request after deploy. Without this the
+  //    initial periodic stats/tier race could leave tiers stale until
+  //    the second tier interval fired (~10 min later).
+  try {
+    console.log("[crawler] initial stats refresh...");
+    const s = await refreshStats();
+    console.log(`[crawler] initial stats: ${s.updated} collections updated in ${s.elapsedMs}ms`);
+  } catch (err) {
+    console.error(`[crawler] initial stats failed: ${err instanceof Error ? err.message : err}`);
+  }
+  try {
+    console.log("[crawler] initial tier classification...");
+    const t = await refreshTiers();
+    console.log(`[crawler] initial tier: T0=${t.tier0} T1=${t.tier1} T2=${t.tier2} (${t.updated} changed) in ${t.elapsedMs}ms`);
+  } catch (err) {
+    console.error(`[crawler] initial tier failed: ${err instanceof Error ? err.message : err}`);
+  }
+
+  // 3-7 run concurrently. Each catches its own errors internally and
   // loops forever; top-level failures here would be unrecoverable bugs.
   const tasks: Array<{ name: string; promise: Promise<void> }> = [
     { name: "poll", promise: startPollLoop(source) },
