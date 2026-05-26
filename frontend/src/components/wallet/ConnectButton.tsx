@@ -24,33 +24,32 @@ export function ConnectButton() {
             {!connected ? (
               <button
                 onClick={openConnectModal}
-                className="px-4 py-2 bg-mint text-background font-medium text-sm rounded-lg hover:bg-mint-dim transition-colors"
+                className="px-4 py-2 bg-mint text-background font-medium text-sm hover:bg-mint-dim transition-colors"
               >
-                Connect Wallet
+                Connect wallet
               </button>
             ) : chain.unsupported ? (
               <button
                 onClick={openConnectModal}
-                className="px-4 py-2 text-sm border border-danger/50 text-danger rounded-lg hover:bg-danger/10 transition-colors"
+                className="px-4 py-2 text-sm border border-danger/50 text-danger hover:bg-danger/10 transition-colors"
               >
-                Wrong Network
+                Wrong network
               </button>
             ) : (
-              // Connected view. The address itself is a Link to the
-              // user's wallet profile page. The small chevron next to
-              // it opens RainbowKit's account modal (disconnect, copy,
-              // chain switch). Two distinct affordances on one
-              // visually-compact control.
-              <div className="flex items-center gap-1">
+              // Connected view. The address is a Link to the user's
+              // wallet profile page. The small chevron next to it opens
+              // RainbowKit's account modal (disconnect, copy, chain
+              // switch). Two distinct affordances on one compact control.
+              <div className="flex items-center border border-border bg-background-secondary hover:border-border-hover transition-colors">
                 <Link
                   href={`/wallet/${account.address}`}
-                  className="text-sm text-foreground-secondary hover:text-mint transition-colors px-2 py-2"
+                  className="text-sm text-foreground hover:text-mint transition-colors pl-3 pr-2 py-2"
                 >
                   {account.displayName}
                 </Link>
                 <button
                   onClick={openAccountModal}
-                  className="p-1.5 text-foreground-secondary hover:text-mint transition-colors"
+                  className="px-2 py-2 text-foreground-secondary hover:text-foreground transition-colors border-l border-border"
                   aria-label="Account menu"
                   title="Account menu"
                 >

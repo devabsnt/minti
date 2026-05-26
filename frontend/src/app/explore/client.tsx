@@ -196,22 +196,20 @@ export function ExploreClient() {
   }, [search, router]);
 
   return (
-    <div className="max-w-7xl mx-auto px-4 py-8">
-      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 mb-8">
+    <div className="max-w-7xl mx-auto px-4 py-10">
+      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-6 mb-10">
         <div>
-          <h1 className="text-2xl font-bold">Discover</h1>
-          <p className="text-sm text-foreground-secondary mt-1">
+          <h1 className="text-4xl font-bold tracking-tight">Discover</h1>
+          <p className="text-sm text-foreground-secondary mt-2">
             Collections on {CHAIN_NAMES[browseChainId] || "Unknown Chain"}
             {longTailTotal > 0 && (
-              <span className="ml-1">
-                · {formatNumber(longTailTotal)} active
-              </span>
+              <span> · {formatNumber(longTailTotal)} active</span>
             )}
           </p>
         </div>
 
         <div className="flex items-center gap-3 w-full sm:w-auto">
-          <div className="flex-1 sm:flex-initial sm:w-72">
+          <div className="flex-1 sm:flex-initial sm:w-80">
             <Input
               placeholder="Search name, ticker, or 0x address"
               value={search}
@@ -222,21 +220,21 @@ export function ExploreClient() {
         </div>
       </div>
 
-      <div className="space-y-10">
+      <div className="space-y-14">
         {/* Featured tier. Editorial picks from `/public/data/featured.json`.
             Each card auto-populates from indexer data using the contract
             address as the key. */}
         {featuredEntries && featuredEntries.length > 0 && (
           <section>
-            <div className="flex items-baseline justify-between mb-3">
-              <h2 className="text-sm font-medium uppercase tracking-wide text-foreground-secondary">
-                Featured
-                <span className="ml-2 text-xs text-foreground-secondary/70">
-                  minti picks
-                </span>
-              </h2>
+            <div className="flex items-baseline justify-between mb-5">
+              <div>
+                <h2 className="text-xl font-semibold">Featured</h2>
+                <p className="text-sm text-foreground-secondary mt-0.5">
+                  Hand-picked by minti
+                </p>
+              </div>
             </div>
-            <div className="space-y-3">
+            <div className="space-y-4">
               {featuredEntries.map((entry) => (
                 <FeaturedCard key={entry.address} entry={entry} />
               ))}
@@ -247,17 +245,17 @@ export function ExploreClient() {
         {/* Trending hero. */}
         {trendingHero.length > 0 && (
           <section>
-            <div className="flex items-baseline justify-between mb-3">
-              <h2 className="text-sm font-medium uppercase tracking-wide text-foreground-secondary">
-                Trending
-                <span className="ml-2 text-xs text-foreground-secondary/70">
-                  most active
-                </span>
-              </h2>
+            <div className="flex items-baseline justify-between mb-5">
+              <div>
+                <h2 className="text-xl font-semibold">Trending</h2>
+                <p className="text-sm text-foreground-secondary mt-0.5">
+                  Most active in the last 30 days
+                </p>
+              </div>
             </div>
-            {/* Podium for ranks 1-3 — full-width stacked cards with
+            {/* Podium for ranks 1-3: full-width stacked cards with
                 gold/silver/bronze borders and a dimmed collage. */}
-            <div className="space-y-3 mb-3">
+            <div className="space-y-4 mb-4">
               {trendingHero.slice(0, 3).map((collection, idx) => (
                 <TrendingPodiumCard
                   key={collection.address}
@@ -269,7 +267,7 @@ export function ExploreClient() {
             </div>
             {/* Ranks 4-10 in the existing compact-row layout. */}
             {trendingHero.length > 3 && (
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
                 {trendingHero.slice(3).map((collection, idx) => (
                   <TrendingHeroCard
                     key={collection.address}
@@ -283,27 +281,31 @@ export function ExploreClient() {
           </section>
         )}
 
-        {/* ── Long-tail / all collections ──────────────────────── */}
+        {/* Long-tail / all collections. */}
         <section>
-          <div className="flex flex-col gap-3 mb-4">
+          <div className="flex flex-col gap-4 mb-6">
             <div className="flex items-baseline justify-between gap-3">
-              <h2 className="text-sm font-medium uppercase tracking-wide text-foreground-secondary">
-                All collections
-                {longTailTotal > 0 && (
-                  <span className="ml-2 text-xs">{formatNumber(longTailTotal)}</span>
-                )}
+              <div>
+                <h2 className="text-xl font-semibold">
+                  All collections
+                  {longTailTotal > 0 && (
+                    <span className="ml-2 text-sm font-normal text-foreground-secondary">
+                      {formatNumber(longTailTotal)}
+                    </span>
+                  )}
+                </h2>
                 {longTailLoading && (
-                  <span className="ml-2 text-xs text-foreground-secondary/70">
-                    loading…
-                  </span>
+                  <p className="text-sm text-foreground-secondary mt-0.5">
+                    Loading…
+                  </p>
                 )}
-              </h2>
-              <label className="text-xs text-foreground-secondary flex items-center gap-1.5 cursor-pointer select-none">
+              </div>
+              <label className="text-sm text-foreground-secondary flex items-center gap-2 cursor-pointer select-none">
                 <input
                   type="checkbox"
                   checked={!showAll}
                   onChange={(e) => {
-                    // Checkbox represents "established only" — when
+                    // Checkbox represents "established only" - when
                     // ticked, we filter to tier 2 (drops the long-tail).
                     setShowAll(!e.target.checked);
                     setLongTailPage(0);
@@ -443,7 +445,7 @@ function FeaturedCard({ entry }: { entry: FeaturedCollectionEntry }) {
           />
         </div>
         <div className="flex-1 min-w-0 flex flex-col gap-1 pr-4 sm:pr-0">
-          <div className="text-xl sm:text-2xl font-bold truncate">{name}</div>
+          <h3 className="text-2xl font-bold truncate">{name}</h3>
           {symbol && (
             <div className="text-sm text-foreground-secondary truncate">
               {symbol}
@@ -454,25 +456,23 @@ function FeaturedCard({ entry }: { entry: FeaturedCollectionEntry }) {
               {blurb}
             </p>
           )}
-          <div className="flex flex-wrap items-center gap-x-4 gap-y-1 mt-2 text-sm">
+          <div className="flex flex-wrap items-center gap-x-5 gap-y-1 mt-3 text-sm">
             <span>
-              <span className="text-mint font-medium">
+              <span className="font-medium">
                 {formatCompact(transferCount)}
               </span>
-              <span className="text-foreground-secondary ml-1">transfers</span>
+              <span className="text-foreground-secondary ml-1.5">transfers</span>
             </span>
             <span>
-              <span className="text-mint font-medium">
+              <span className="font-medium">
                 {formatNumber(uniqueHolders)}
               </span>
-              <span className="text-foreground-secondary ml-1">holders</span>
+              <span className="text-foreground-secondary ml-1.5">holders</span>
             </span>
             {supply > 0 && (
               <span>
-                <span className="text-mint font-medium">
-                  {formatNumber(supply)}
-                </span>
-                <span className="text-foreground-secondary ml-1">items</span>
+                <span className="font-medium">{formatNumber(supply)}</span>
+                <span className="text-foreground-secondary ml-1.5">items</span>
               </span>
             )}
             <FloorPrice contractAddress={collection.address} />
@@ -493,42 +493,42 @@ function LongTailCard({ collection }: { collection: ApiCollection }) {
   const symbol = collection.symbol || "";
   const transferCount = collection.transferCount ?? 0;
   const uniqueHolders = collection.uniqueHolders ?? 0;
+  const supply = collection.totalSupply ? Number(collection.totalSupply) : 0;
 
   return (
     <a
       href={`/collection/${collection.address}`}
-      className="block border border-border overflow-hidden bg-background-secondary hover:border-mint/30 transition-all hover:shadow-lg hover:shadow-mint-glow"
+      className="group block border border-border overflow-hidden bg-background-secondary hover:border-border-hover transition-colors"
     >
       <NftImage
         src={collection.sampleImageUrl ?? ""}
         alt={name}
         className="aspect-square w-full"
       />
-      <div className="p-3 space-y-1.5">
+      <div className="p-4 space-y-1">
         <div className="flex items-baseline justify-between gap-2">
-          <span className="text-sm font-medium truncate">{name}</span>
+          <h3 className="text-base font-semibold truncate">{name}</h3>
           {symbol && (
             <span className="text-xs text-foreground-secondary flex-shrink-0">
               {symbol}
             </span>
           )}
         </div>
-        {(transferCount > 0 || uniqueHolders > 0) && (
-          <div className="flex items-center gap-2 text-xs text-foreground-secondary">
-            {uniqueHolders > 0 && (
-              <span>{formatCompact(uniqueHolders)} holders</span>
-            )}
-            {uniqueHolders > 0 && transferCount > 0 && <span>·</span>}
-            {transferCount > 0 && (
-              <span>{formatCompact(transferCount)} transfers</span>
-            )}
-          </div>
-        )}
-        {collection.totalSupply && Number(collection.totalSupply) > 0 && (
-          <div className="text-xs text-foreground-secondary">
-            {formatNumber(collection.totalSupply)} items
-          </div>
-        )}
+        <div className="flex items-center gap-1.5 text-xs text-foreground-secondary">
+          {uniqueHolders > 0 && (
+            <span>{formatCompact(uniqueHolders)} holders</span>
+          )}
+          {uniqueHolders > 0 && transferCount > 0 && (
+            <span aria-hidden>·</span>
+          )}
+          {transferCount > 0 && (
+            <span>{formatCompact(transferCount)} transfers</span>
+          )}
+          {supply > 0 && (uniqueHolders > 0 || transferCount > 0) && (
+            <span aria-hidden>·</span>
+          )}
+          {supply > 0 && <span>{formatNumber(supply)} items</span>}
+        </div>
       </div>
     </a>
   );
@@ -700,36 +700,34 @@ function TrendingPodiumCard({
                 )}
               </div>
               <div
-                className="flex-shrink-0 flex flex-col items-end gap-0.5"
+                className="flex-shrink-0 flex flex-col items-end gap-1"
                 title="Activity in the last 24 hours"
               >
                 <ActivitySparkline contractAddress={collection.address} />
-                <span className="text-[10px] uppercase tracking-wider text-foreground-secondary/60">
-                  24h
-                </span>
+                <span className="text-xs text-foreground-secondary">24h</span>
               </div>
             </div>
-            <div className="flex flex-wrap items-center gap-x-4 gap-y-1 mt-2 text-sm">
+            <div className="flex flex-wrap items-center gap-x-5 gap-y-1 mt-3 text-sm">
               <span>
-                <span className="text-mint font-medium">
+                <span className="font-medium">
                   {formatCompact(transferCount)}
                 </span>
-                <span className="text-foreground-secondary ml-1">
+                <span className="text-foreground-secondary ml-1.5">
                   transfers
                 </span>
               </span>
               <span>
-                <span className="text-mint font-medium">
+                <span className="font-medium">
                   {formatNumber(uniqueHolders)}
                 </span>
-                <span className="text-foreground-secondary ml-1">holders</span>
+                <span className="text-foreground-secondary ml-1.5">holders</span>
               </span>
               {supply > 0 && (
                 <span>
-                  <span className="text-mint font-medium">
-                    {formatNumber(supply)}
+                  <span className="font-medium">{formatNumber(supply)}</span>
+                  <span className="text-foreground-secondary ml-1.5">
+                    items
                   </span>
-                  <span className="text-foreground-secondary ml-1">items</span>
                 </span>
               )}
               <FloorPrice contractAddress={collection.address} />
@@ -851,8 +849,8 @@ function FloorPrice({ contractAddress }: { contractAddress: string }) {
   if (!floor) return null;
   return (
     <span>
-      <span className="text-mint font-medium">{floor.priceFormatted}</span>
-      <span className="text-foreground-secondary ml-1">floor</span>
+      <span className="font-medium">{floor.priceFormatted}</span>
+      <span className="text-foreground-secondary ml-1.5">floor</span>
     </span>
   );
 }
@@ -886,9 +884,9 @@ function TrendingHeroCard({
   return (
     <a
       href={`/collection/${collection.address}`}
-      className="group relative flex gap-3 items-center p-3 border border-border bg-background-secondary hover:border-mint/40 hover:shadow-lg hover:shadow-mint-glow transition-all"
+      className="group relative flex gap-4 items-center p-4 border border-border bg-background-secondary hover:border-border-hover transition-colors"
     >
-      <div className="flex items-center gap-0.5 w-9 text-sm font-bold text-foreground-secondary/70 flex-shrink-0">
+      <div className="flex items-center gap-1 w-10 text-sm font-semibold text-foreground-secondary flex-shrink-0">
         <span>{rank}</span>
         <TrendArrow trend={trend} />
       </div>
@@ -900,17 +898,14 @@ function TrendingHeroCard({
         />
       </div>
       <div className="flex-1 min-w-0">
-        <div className="flex items-center gap-1.5">
-          <span className="text-sm font-semibold truncate">{name}</span>
-        </div>
-        <div className="text-xs text-foreground-secondary truncate">
-          {symbol}
-        </div>
-        <div className="flex items-center gap-2 text-xs mt-0.5">
-          <span className="text-mint">
-            {formatCompact(transferCount)}{" "}
-            <span className="text-foreground-secondary">transfers</span>
-          </span>
+        <h3 className="text-base font-semibold truncate">{name}</h3>
+        {symbol && (
+          <div className="text-xs text-foreground-secondary truncate">
+            {symbol}
+          </div>
+        )}
+        <div className="text-xs text-foreground-secondary mt-1">
+          {formatCompact(transferCount)} transfers
         </div>
       </div>
     </a>

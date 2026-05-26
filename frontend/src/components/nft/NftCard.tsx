@@ -52,7 +52,7 @@ export function NftCard({
     <Link
       href={`/collection/${contractAddress}/${tokenId}`}
       onClick={onClick}
-      className="group border border-border overflow-hidden bg-background-secondary hover:border-mint/30 transition-all hover:shadow-lg hover:shadow-mint-glow"
+      className="group block border border-border overflow-hidden bg-background-secondary hover:border-border-hover transition-colors"
     >
       <NftImage
         // Force remount when we swap from synthesized to fetched URL so
@@ -65,25 +65,23 @@ export function NftCard({
         onAllFailed={primaryFailed ? undefined : () => setPrimaryFailed(true)}
       />
 
-      <div className="p-3 space-y-2">
-        <div className="truncate text-sm font-medium">
+      <div className="p-4 space-y-2">
+        <div className="truncate text-sm font-semibold">
           {effectiveMetadata?.name || `#${tokenId}`}
         </div>
 
-        <div className="flex items-center justify-between">
+        <div className="flex items-center justify-between gap-2">
           {price != null && price > 0n ? (
             <div className="text-sm">
-              <span className="text-mint font-medium">
-                {formatPrice(price)}
-              </span>
-              <span className="text-foreground-secondary ml-1">{symbol}</span>
+              <span className="font-medium">{formatPrice(price)}</span>
+              <span className="text-foreground-secondary ml-1.5">{symbol}</span>
             </div>
           ) : (
             <span className="text-xs text-foreground-secondary">Not listed</span>
           )}
 
           {seller && (
-            <span className="text-xs text-foreground-secondary">
+            <span className="text-xs text-foreground-secondary truncate">
               {truncateAddress(seller)}
             </span>
           )}

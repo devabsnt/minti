@@ -7,44 +7,48 @@ export const metadata: Metadata = {
     "Generative art tool for NFT collections. Trait layers, exclusion rules, on-chain RLE rendering, IPFS export.",
 };
 
+const FEATURES = [
+  "Trait layers",
+  "Exclusion rules",
+  "CSS / Photoshop effects",
+  "RLE on-chain art",
+  "IPFS export",
+  "Pixel rendering",
+];
+
 export default function GeneratorPage() {
   return (
-    <div className="max-w-7xl mx-auto px-4 py-20 flex flex-col items-center text-center">
+    <div className="max-w-2xl mx-auto px-4 py-24 flex flex-col items-center text-center">
       <Image
         src="/mintiMascot.png"
         alt="Minti mascot"
-        width={80}
-        height={80}
-        className="mb-6 opacity-50"
+        width={96}
+        height={96}
+        className="mb-8 opacity-40"
       />
 
-      <h1 className="text-2xl font-bold mb-3">NFT Generator</h1>
+      <p className="text-xs text-foreground-secondary uppercase tracking-wider mb-3">
+        Coming soon
+      </p>
+      <h1 className="text-3xl font-bold tracking-tight mb-4">
+        NFT Generator
+      </h1>
 
-      <p className="text-foreground-secondary max-w-md mb-4">
-        The generative art tool is coming soon. Upload trait layers, configure
-        rules, apply effects, and create collections, with optional on-chain
-        RLE art storage.
+      <p className="text-foreground-secondary mb-10 leading-relaxed">
+        A generative art tool for NFT collections. Upload trait layers,
+        configure rules, apply effects, and create collections, with
+        optional on-chain RLE art storage.
       </p>
 
-      <div className="flex flex-wrap gap-3 justify-center text-xs text-foreground-secondary">
-        <span className="border border-border rounded-full px-3 py-1">
-          Trait layers
-        </span>
-        <span className="border border-border rounded-full px-3 py-1">
-          Exclusion rules
-        </span>
-        <span className="border border-border rounded-full px-3 py-1">
-          CSS/Photoshop effects
-        </span>
-        <span className="border border-border rounded-full px-3 py-1">
-          RLE on-chain art
-        </span>
-        <span className="border border-border rounded-full px-3 py-1">
-          IPFS export
-        </span>
-        <span className="border border-border rounded-full px-3 py-1">
-          Pixel rendering
-        </span>
+      <div className="flex flex-wrap gap-2 justify-center text-xs text-foreground-secondary">
+        {FEATURES.map((label) => (
+          <span
+            key={label}
+            className="border border-border px-3 py-1.5 bg-background-secondary"
+          >
+            {label}
+          </span>
+        ))}
       </div>
     </div>
   );

@@ -13,7 +13,7 @@ export function Input({ label, suffix, className = "", ...props }: InputProps) {
       )}
       <div className="relative">
         <input
-          className={`w-full bg-background border border-border rounded-lg px-3 py-2 text-sm text-foreground placeholder:text-foreground-secondary/50 focus:border-mint focus:outline-none transition-colors ${suffix ? "pr-12" : ""} ${className}`}
+          className={`w-full bg-background-secondary border border-border px-3.5 py-2.5 text-sm text-foreground placeholder:text-foreground-secondary/50 focus:border-mint/60 focus:outline-none focus:bg-background transition-colors ${suffix ? "pr-12" : ""} ${className}`}
           {...props}
         />
         {suffix && (

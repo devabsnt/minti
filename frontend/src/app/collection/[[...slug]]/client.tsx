@@ -372,27 +372,36 @@ function CollectionPage({
 
   return (
     <div className="max-w-7xl mx-auto px-4 py-8">
-      <div className="mb-8 flex items-start justify-between">
-        <div className="flex items-center gap-4">
-          <div className="w-14 h-14 rounded-xl overflow-hidden border border-border flex-shrink-0 bg-background-secondary">
+      {/* Collection header.
+          Layout reads top-to-bottom on mobile and side-by-side on desktop:
+            row 1: icon + name (+ verified check) + symbol
+            row 2: meta strip (address + supply + creator)
+            row 3 (EVMFS only): on-chain / contract type badges
+          The listing count and primary actions sit in a quiet panel on
+          the right at sm+, dropping below the title on mobile. */}
+      <div className="mb-10 flex flex-col sm:flex-row sm:items-start sm:justify-between gap-6">
+        <div className="flex items-start gap-5 min-w-0">
+          <div className="w-16 h-16 overflow-hidden border border-border flex-shrink-0 bg-background-secondary">
             {collectionInfo?.iconUrl ? (
               <NftImage
                 src={collectionInfo.iconUrl}
                 alt={collectionName}
-                className="w-14 h-14"
+                className="w-16 h-16"
               />
             ) : (
-              <div className="w-14 h-14 flex items-center justify-center text-sm text-foreground-secondary font-mono">
+              <div className="w-16 h-16 flex items-center justify-center text-sm text-foreground-secondary font-mono">
                 {collectionAddress.slice(2, 6)}
               </div>
             )}
           </div>
-          <div>
-            <h1 className="text-2xl font-bold mb-1 flex items-center gap-2">
-              {isEvmfs ? evmfsRecord!.name : collectionName}
+          <div className="min-w-0">
+            <div className="flex items-center gap-2.5 flex-wrap">
+              <h1 className="text-3xl font-bold tracking-tight">
+                {isEvmfs ? evmfsRecord!.name : collectionName}
+              </h1>
               {evmfsRecord?.verified && (
                 <span
-                  className="text-mint"
+                  className="text-mint text-xl leading-none"
                   title="Verified by minti"
                   aria-label="Verified"
                 >
@@ -400,52 +409,62 @@ function CollectionPage({
                 </span>
               )}
               {(isEvmfs ? evmfsRecord!.symbol : collectionInfo?.symbol) && (
-                <span className="text-sm text-foreground-secondary font-normal">
+                <span className="text-base text-foreground-secondary font-medium">
                   {isEvmfs ? evmfsRecord!.symbol : collectionInfo!.symbol}
                 </span>
               )}
-              {isEvmfs && (
+            </div>
+            <div className="flex items-center gap-2 mt-2 text-sm text-foreground-secondary">
+              <span className="font-mono">
+                {truncateAddress(collectionAddress, 8)}
+              </span>
+              <CopyButton
+                value={collectionAddress}
+                label="Copy contract address"
+              />
+              {totalSupply > 0 && (
                 <>
-                  <span className="text-[10px] uppercase tracking-wider text-mint border border-mint/30 rounded px-1.5 py-0.5">
-                    100% on-chain
-                  </span>
-                  <span className="text-[10px] uppercase tracking-wider text-foreground-secondary/70 border border-border rounded px-1 py-0.5">
-                    {evmfsLabel(evmfsRecord!.evmfsContract)}
-                  </span>
+                  <span aria-hidden>·</span>
+                  <span>{formatNumber(totalSupply)} items</span>
                 </>
               )}
-            </h1>
-            <p className="text-xs text-foreground-secondary font-mono flex items-center gap-1.5">
-              <span>{truncateAddress(collectionAddress, 8)}</span>
-              <CopyButton value={collectionAddress} label="Copy contract address" />
-              {totalSupply > 0 && (
-                <span className="ml-1">&middot; {formatNumber(totalSupply)} items</span>
-              )}
               {isEvmfs && (
-                <span className="ml-1">
-                  &middot; by {truncateAddress(evmfsRecord!.creator)}
-                </span>
+                <>
+                  <span aria-hidden>·</span>
+                  <span>by {truncateAddress(evmfsRecord!.creator)}</span>
+                </>
               )}
-            </p>
+            </div>
+            {isEvmfs && (
+              <div className="flex items-center gap-2 mt-3">
+                <span className="text-xs text-mint border border-mint/30 px-2 py-0.5">
+                  Fully on-chain
+                </span>
+                <span className="text-xs text-foreground-secondary border border-border px-2 py-0.5">
+                  {evmfsLabel(evmfsRecord!.evmfsContract)}
+                </span>
+              </div>
+            )}
           </div>
         </div>
-        <div className="text-right space-y-2">
+        <div className="flex flex-col items-stretch sm:items-end gap-3 flex-shrink-0">
           <p className="text-sm text-foreground-secondary">
             {listingTotal} listed
             {offers && offers.length > 0 && (
-              <span>
-                {" "}&middot; {offers.length} offer{offers.length !== 1 ? "s" : ""}
-              </span>
+              <>
+                <span aria-hidden> · </span>
+                {offers.length} offer{offers.length !== 1 ? "s" : ""}
+              </>
             )}
           </p>
-          <div className="flex items-center justify-end gap-2">
+          <div className="flex items-center gap-2">
             {mounted && address && (
               <Button
                 variant="secondary"
                 size="sm"
                 onClick={() => setShowOfferModal(true)}
               >
-                Collection Offer
+                Collection offer
               </Button>
             )}
             <HideCollectionButton address={collectionAddress} />
@@ -501,11 +520,14 @@ function CollectionPage({
         </div>
       )}
       {mounted && address && ownedDiscovered.length > 0 && (
-        <div className="mb-8">
-          <h3 className="text-sm font-medium mb-3">
-            Your Items ({ownedDiscovered.length}
-            {hasBalanceOnly && ownedDiscovered.length > 0 ? "+" : ""})
-          </h3>
+        <div className="mb-10">
+          <h2 className="text-lg font-semibold mb-4">
+            Your items
+            <span className="ml-2 text-sm font-normal text-foreground-secondary">
+              {ownedDiscovered.length}
+              {hasBalanceOnly && ownedDiscovered.length > 0 ? "+" : ""}
+            </span>
+          </h2>
           <NftGrid loading={false} empty={false}>
             {ownedDiscovered.map((token) => (
               <OwnedCollectionCard
@@ -519,23 +541,23 @@ function CollectionPage({
         </div>
       )}
 
-      {/* Tabs: Browse All / Listings */}
+      {/* Tabs: Browse / Listings */}
       <div className="flex gap-6 border-b border-border mb-6">
         <button
           onClick={() => setTab("browse")}
-          className={`pb-3 text-sm font-medium transition-colors ${
+          className={`pb-3 text-sm font-semibold transition-colors ${
             tab === "browse"
-              ? "text-mint border-b-2 border-mint"
+              ? "text-foreground border-b-2 border-mint"
               : "text-foreground-secondary hover:text-foreground"
           }`}
         >
-          Browse All
+          Browse
         </button>
         <button
           onClick={() => setTab("listings")}
-          className={`pb-3 text-sm font-medium transition-colors ${
+          className={`pb-3 text-sm font-semibold transition-colors ${
             tab === "listings"
-              ? "text-mint border-b-2 border-mint"
+              ? "text-foreground border-b-2 border-mint"
               : "text-foreground-secondary hover:text-foreground"
           }`}
         >

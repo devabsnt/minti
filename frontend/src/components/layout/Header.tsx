@@ -26,11 +26,10 @@ export function Header() {
   }, [mobileOpen]);
 
   const linkClass = useCallback(
-    (href: string, accent = false) => {
+    (href: string) => {
       const active = pathname === href || pathname?.startsWith(href + "/");
-      const base = "text-sm transition-colors";
-      if (active) return `${base} text-mint font-medium`;
-      if (accent) return `${base} text-mint hover:text-mint/80 font-medium`;
+      const base = "text-sm font-medium transition-colors";
+      if (active) return `${base} text-foreground`;
       return `${base} text-foreground-secondary hover:text-foreground`;
     },
     [pathname],
@@ -38,21 +37,22 @@ export function Header() {
 
   return (
     <header className="sticky top-0 z-50 border-b border-border bg-background/80 backdrop-blur-md">
-      <div className="max-w-7xl mx-auto px-4 h-16 flex items-center justify-between gap-3">
+      <div className="max-w-7xl mx-auto px-4 h-16 flex items-center justify-between gap-4">
         {/* Logo + Nav */}
-        <div className="flex items-center gap-8 flex-shrink-0">
-          <Link href="/" className="shrink-0">
-            <span className="font-bold text-lg">
-              <span className="text-mint">minti</span>
-              <span className="text-foreground">.art</span>
-            </span>
+        <div className="flex items-center gap-10 flex-shrink-0">
+          <Link
+            href="/"
+            className="text-base font-bold tracking-tight shrink-0"
+          >
+            <span className="text-mint">minti</span>
+            <span className="text-foreground">.art</span>
           </Link>
 
-          <nav className="hidden md:flex items-center gap-6">
+          <nav className="hidden md:flex items-center gap-7">
             <Link href="/explore" className={linkClass("/explore")}>
               Explore
             </Link>
-            <Link href="/launch" className={linkClass("/launch", true)}>
+            <Link href="/launch" className={linkClass("/launch")}>
               Launch
             </Link>
             <Link href="/generator" className={linkClass("/generator")}>
@@ -61,7 +61,7 @@ export function Header() {
           </nav>
         </div>
 
-        {/* Search — autocompletes by name from the snapshot */}
+        {/* Search. Autocompletes by name from the snapshot. */}
         <div className="hidden sm:flex flex-1 max-w-md mx-2 min-w-0">
           <GlobalSearch />
         </div>
@@ -110,19 +110,19 @@ export function Header() {
             <nav className="flex flex-col gap-1 text-base">
               <Link
                 href="/explore"
-                className={`px-2 py-2 rounded-md ${linkClass("/explore")}`}
+                className={`px-2 py-2 ${linkClass("/explore")}`}
               >
                 Explore
               </Link>
               <Link
                 href="/launch"
-                className={`px-2 py-2 rounded-md ${linkClass("/launch", true)}`}
+                className={`px-2 py-2 ${linkClass("/launch")}`}
               >
                 Launch
               </Link>
               <Link
                 href="/generator"
-                className={`px-2 py-2 rounded-md ${linkClass("/generator")}`}
+                className={`px-2 py-2 ${linkClass("/generator")}`}
               >
                 Generator
               </Link>

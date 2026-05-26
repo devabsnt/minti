@@ -184,7 +184,7 @@ export function GlobalSearch() {
           aria-autocomplete="list"
           aria-expanded={open}
           aria-controls={open ? "global-search-results" : undefined}
-          className={`w-full h-9 px-3 pr-9 text-sm bg-background-secondary border rounded-lg placeholder:text-foreground-secondary/50 focus:outline-none focus:border-mint/50 transition-colors ${
+          className={`w-full h-10 px-3.5 pr-9 text-sm bg-background-secondary border placeholder:text-foreground-secondary/50 focus:outline-none focus:border-mint/60 focus:bg-background transition-colors ${
             error ? "border-danger" : "border-border"
           }`}
         />
@@ -192,7 +192,7 @@ export function GlobalSearch() {
           type="button"
           onClick={handleEnter}
           aria-label="Search"
-          className="absolute right-2 top-1/2 -translate-y-1/2 text-foreground-secondary hover:text-mint transition-colors"
+          className="absolute right-2.5 top-1/2 -translate-y-1/2 text-foreground-secondary hover:text-foreground transition-colors"
         >
           <svg
             xmlns="http://www.w3.org/2000/svg"
