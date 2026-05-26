@@ -4,5 +4,7 @@
     "address": "0x... (required, lowercased on read)",
     "blurb": "One-line editorial caption shown in italic mint above the stats row. Optional but recommended."
   },
-  "collections": []
+  "collections": [
+    {"address": "0xb0dad798c80e40dd6b8e8545074c6a5b7b97d2c0", "blurb": "DN"}
+  ]
 }
