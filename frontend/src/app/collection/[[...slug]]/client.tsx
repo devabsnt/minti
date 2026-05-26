@@ -1,7 +1,7 @@
 "use client";
 
 import { useParams } from "next/navigation";
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { useAccount } from "wagmi";
 import { useCollectionListings } from "@/hooks/useListings";
 import { useCollectionBids, useCollectionOffers } from "@/hooks/useBids";
@@ -10,6 +10,10 @@ import { useCollectionInfo } from "@/hooks/useCollectionInfo";
 import { useCollectionTokens } from "@/hooks/useCollectionTokens";
 import { useCollectionTokensByIds } from "@/hooks/useCollectionTokensByIds";
 import { useNftMetadata, useBatchNftMetadata } from "@/hooks/useNftMetadata";
+import {
+  useIndexerCollection,
+  useIndexerCollectionTokens,
+} from "@/hooks/useIndexerCollections";
 import { useRegisteredCollectionByNft } from "@/hooks/useRegistry";
 import { useEvmfsTokenMetadata } from "@/hooks/useEvmfsMetadata";
 import { useTokenViewerUri } from "@/hooks/useTokenViewerUri";
@@ -120,6 +124,11 @@ function CollectionPage({
   const [traitSelection, setTraitSelection] = useState<TraitSelection>({});
   const { data: listingData, isLoading: listingsLoading } = useCollectionListings(collectionAddress, listingPage);
   const { data: offers } = useCollectionOffers(collectionAddress);
+  // Collection identity now comes from the indexer (live, populated by
+  // the enrichment pass) with on-chain `useCollectionInfo` as a fallback
+  // for collections the indexer hasn't seen yet (e.g. brand-new contract).
+  const { data: indexerData } = useIndexerCollection(collectionAddress);
+  const indexerCollection = indexerData?.collection ?? null;
   const { data: collectionInfo } = useCollectionInfo(collectionAddress);
   const { data: evmfsRecord } = useRegisteredCollectionByNft(collectionAddress);
   const isEvmfs = !!evmfsRecord;
@@ -152,26 +161,79 @@ function CollectionPage({
       filteredPageIds,
     );
 
+  // Browse tokens — for the non-EVMFS / non-filter path, source from
+  // the indexer. Works for any contract (no Enumerable requirement)
+  // because the indexer enumerates from Transfer events. For the
+  // filter path (EVMFS trait-filter) we keep the existing flow.
+  const indexerPageSize = 48;
+  const { data: indexerTokenData, isLoading: indexerBrowseLoading } =
+    useIndexerCollectionTokens(
+      filteredIds !== null ? undefined : collectionAddress,
+      browsePage,
+      indexerPageSize,
+    );
+  const indexerBrowseTokens = useMemo(
+    () =>
+      (indexerTokenData?.tokens ?? []).map((t) => ({
+        tokenId: BigInt(t.tokenId),
+        owner: t.owner ?? "0x0000000000000000000000000000000000000000",
+      })),
+    [indexerTokenData],
+  );
+  const indexerBrowseTotal = indexerTokenData?.pagination.total ?? 0;
+  const indexerBrowsePages = Math.max(
+    1,
+    Math.ceil(indexerBrowseTotal / indexerPageSize),
+  );
+
+  // We still need totalSupply for the header display. Indexer collection
+  // row has it for enriched collections; fall back to on-chain reader.
+  const indexerTotalSupply = indexerCollection?.totalSupply
+    ? Number(indexerCollection.totalSupply)
+    : 0;
   const {
     tokens: defaultBrowseTokens,
-    totalSupply,
+    totalSupply: contractTotalSupply,
     totalPages: defaultTotalPages,
     isLoading: defaultBrowseLoading,
   } = useCollectionTokens(collectionAddress, filteredIds !== null ? 0 : browsePage);
+  const totalSupply = indexerTotalSupply || contractTotalSupply;
 
-  const browseTokens = filteredIds !== null ? filteredTokenRows : defaultBrowseTokens;
-  const browseLoading = filteredIds !== null ? filteredLoading : defaultBrowseLoading;
-  const browseTotalPages =
-    filteredIds !== null
-      ? Math.max(1, Math.ceil(filteredIds.length / filterPageSize))
+  // Source preference: filtered (EVMFS trait filter) > indexer > legacy
+  // Enumerable fallback (only kicks in if indexer somehow has zero tokens
+  // for this collection, e.g. it was just discovered).
+  const browseTokens = filteredIds !== null
+    ? filteredTokenRows
+    : indexerBrowseTokens.length > 0 || indexerBrowseTotal > 0
+      ? indexerBrowseTokens
+      : defaultBrowseTokens;
+  const browseLoading = filteredIds !== null
+    ? filteredLoading
+    : indexerBrowseLoading || (indexerBrowseTotal === 0 && defaultBrowseLoading);
+  const browseTotalPages = filteredIds !== null
+    ? Math.max(1, Math.ceil(filteredIds.length / filterPageSize))
+    : indexerBrowseTotal > 0
+      ? indexerBrowsePages
       : defaultTotalPages;
 
-  // Batch-fetch metadata for browse tokens
-  const batchTokens = browseTokens.map((t) => ({
-    contractAddress: collectionAddress,
-    tokenId: t.tokenId,
-  }));
+  // Per-token metadata via Multicall — only used for the legacy
+  // Enumerable fallback (when indexer doesn't have the collection yet)
+  // AND for the EVMFS-trait-filtered path. The indexer-driven path uses
+  // `imageUrlTemplate` substitution in NftCard instead of a per-token
+  // metadata fetch, which is what kills the scatter-502 storm.
+  const usingIndexerBrowse =
+    filteredIds === null && (indexerBrowseTokens.length > 0 || indexerBrowseTotal > 0);
+  const batchTokens = usingIndexerBrowse
+    ? []
+    : browseTokens.map((t) => ({
+        contractAddress: collectionAddress,
+        tokenId: t.tokenId,
+      }));
   const { data: metadataMap } = useBatchNftMetadata(batchTokens);
+
+  // Substitute `{id}` in the collection's image URL template for the
+  // browse grid. Computed once per token list change.
+  const imageUrlTemplate = indexerCollection?.imageUrlTemplate ?? null;
 
   const {
     tokens: ownedDiscovered,
@@ -402,7 +464,25 @@ function CollectionPage({
                     key={token.tokenId.toString()}
                     contractAddress={collectionAddress}
                     tokenId={token.tokenId.toString()}
-                    metadata={metadataMap?.get(`${collectionAddress}:${token.tokenId}`)}
+                    metadata={
+                      // Prefer batched-fetched metadata when present
+                      // (legacy Enumerable path). Otherwise synthesize
+                      // from the collection's template: NO per-token
+                      // network fetch, no scatter 502s. Falls back to
+                      // an empty object so NftImage shows its placeholder.
+                      metadataMap?.get(`${collectionAddress}:${token.tokenId}`) ??
+                      (imageUrlTemplate
+                        ? {
+                            name: `#${token.tokenId.toString()}`,
+                            description: "",
+                            image: imageUrlTemplate.replace(
+                              /\{id\}/g,
+                              token.tokenId.toString(),
+                            ),
+                            attributes: [],
+                          }
+                        : undefined)
+                    }
                     seller={token.owner !== address?.toLowerCase() ? token.owner : undefined}
                   />
                 ),
