@@ -193,17 +193,30 @@ export function buildImageUrlTemplate(
 
   const isBoundary = (ch: string | undefined): boolean =>
     ch == null || !/[A-Za-z0-9]/.test(ch);
+
   for (const refStr of candidates) {
-    const idx = resolvedImageUrl.lastIndexOf(refStr);
-    if (idx === -1) continue;
-    const before = resolvedImageUrl[idx - 1];
-    const after = resolvedImageUrl[idx + refStr.length];
-    if (!isBoundary(before) || !isBoundary(after)) continue;
-    return (
-      resolvedImageUrl.slice(0, idx) +
-      "{id}" +
-      resolvedImageUrl.slice(idx + refStr.length)
-    );
+    // Scan from right to left through EVERY occurrence of refStr. Take
+    // the rightmost one where both sides are non-alphanumeric (so we
+    // don't mistake a "1" inside a CID or a timestamp for the tokenId
+    // slot). Previously we only checked the absolute last occurrence
+    // and gave up if its boundaries failed — that missed collections
+    // like scatter's `?tokenId=1&v=177578...` where the timestamp has
+    // more digits past the real id.
+    let searchFrom = resolvedImageUrl.length;
+    while (true) {
+      const idx = resolvedImageUrl.lastIndexOf(refStr, searchFrom - 1);
+      if (idx === -1) break;
+      const before = resolvedImageUrl[idx - 1];
+      const after = resolvedImageUrl[idx + refStr.length];
+      if (isBoundary(before) && isBoundary(after)) {
+        return (
+          resolvedImageUrl.slice(0, idx) +
+          "{id}" +
+          resolvedImageUrl.slice(idx + refStr.length)
+        );
+      }
+      searchFrom = idx;
+    }
   }
   return null;
 }

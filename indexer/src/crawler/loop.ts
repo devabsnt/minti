@@ -3,6 +3,7 @@ import { runBootstrap } from "./bootstrap.js";
 import { startEnrichment } from "./enrichment.js";
 import { startPollLoop } from "./poll.js";
 import { pruneOldActivity, startPruneLoop } from "./pruning.js";
+import { retemplateMissingImageTemplates } from "./retemplate.js";
 import { RpcSource } from "./rpc-source.js";
 import { refreshStats, startStatsLoop } from "./stats.js";
 import { refreshTiers, startTierLoop } from "./tier.js";
@@ -72,6 +73,20 @@ export async function startCrawler() {
   //    distribution to the first request after deploy. Without this the
   //    initial periodic stats/tier race could leave tiers stale until
   //    the second tier interval fired (~10 min later).
+  // Retemplate first — fixes up `image_url_template` for collections
+  // where the old (lastIndexOf-only) algorithm missed the match (e.g.
+  // scatter URLs with `tokenId=X&v=<timestamp>`). Pure CPU pass over
+  // stored sample_image_url values. Idempotent: re-runs do nothing
+  // once everything is filled in.
+  try {
+    const r = await retemplateMissingImageTemplates();
+    if (r.filled > 0) {
+      console.log(`[retemplate] filled ${r.filled}/${r.scanned} missing image templates in ${r.elapsedMs}ms`);
+    }
+  } catch (err) {
+    console.error(`[retemplate] failed: ${err instanceof Error ? err.message : err}`);
+  }
+
   try {
     console.log("[crawler] initial stats refresh...");
     const s = await refreshStats();
