@@ -417,7 +417,7 @@ function FeaturedCard({ entry }: { entry: FeaturedCollectionEntry }) {
   return (
     <a
       href={`/collection/${collection.address}`}
-      className="featured-breathe group relative block border overflow-hidden bg-background-secondary transition-all"
+      className="featured-breathe stamp-shadow group relative block border overflow-hidden bg-background-secondary transition-all"
     >
       <div className="relative flex gap-4 p-4 items-start">
         {/* Mascot + FEATURED label in the top-right. */}
@@ -498,7 +498,7 @@ function LongTailCard({ collection }: { collection: ApiCollection }) {
   return (
     <a
       href={`/collection/${collection.address}`}
-      className="group block border border-border overflow-hidden bg-background-secondary hover:border-border-hover transition-colors"
+      className="stamp-shadow group block border border-border overflow-hidden bg-background-secondary hover:border-border-hover transition-colors"
     >
       <NftImage
         src={collection.sampleImageUrl ?? ""}
@@ -884,7 +884,7 @@ function TrendingHeroCard({
   return (
     <a
       href={`/collection/${collection.address}`}
-      className="group relative flex gap-4 items-center p-4 border border-border bg-background-secondary hover:border-border-hover transition-colors"
+      className="stamp-shadow group relative flex gap-4 items-center p-4 border border-border bg-background-secondary hover:border-border-hover transition-colors"
     >
       <div className="flex items-center gap-1 w-10 text-sm font-semibold text-foreground-secondary flex-shrink-0">
         <span>{rank}</span>

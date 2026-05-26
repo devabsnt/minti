@@ -1,56 +1,151 @@
 @import "tailwindcss";
 
 @theme inline {
-  --color-background: #0a0a0f;
-  --color-background-secondary: #12121a;
-  --color-background-tertiary: #1a1a25;
-  --color-foreground: #e8e8ed;
-  --color-foreground-secondary: #9898a8;
-  --color-mint: #4ade80;
-  --color-mint-dim: #22c55e;
-  --color-mint-dark: #166534;
-  --color-mint-glow: rgba(74, 222, 128, 0.15);
-  --color-border: #2a2a35;
-  --color-border-hover: #3a3a48;
-  --color-danger: #ef4444;
-  --color-warning: #f59e0b;
+  /* ── Postcard palette ────────────────────────────────────────────
+     Warm cream paper background, sepia ink, sage green accent
+     (replacing the cold mint), postal-stamp red, mustard warning.
+     Designed to read like a printed postcard album rather than a
+     tech demo. */
+  --color-background: #f1e6cf;            /* warm cream paper */
+  --color-background-secondary: #e6dab9;  /* card paper (slightly darker) */
+  --color-background-tertiary: #d8c9a8;   /* deeper paper / placeholders */
+
+  --color-foreground: #2d2418;            /* deep brown ink */
+  --color-foreground-secondary: #6b5d40;  /* sepia */
+
+  /* Accent green: kept under the `mint` token name so existing
+     `text-mint` / `border-mint/X` utilities continue working. The
+     hue shifted from pure mint to a softer pastel sage that matches
+     the dumpling artwork. */
+  --color-mint: #6b9874;
+  --color-mint-dim: #557e5d;
+  --color-mint-dark: #3a5a44;
+  --color-mint-glow: rgba(107, 152, 116, 0.18);
+
+  --color-border: #c2a572;          /* faded sepia paper edge */
+  --color-border-hover: #a88a52;
+
+  --color-danger: #b8423a;          /* postal stamp red */
+  --color-warning: #c8893e;         /* mustard */
+
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
 }
 
+/* Body. The fixed-position pseudo-element layers a high-frequency
+   SVG noise pattern over the whole page, blended with `multiply` to
+   sit gently on top of card backgrounds without washing them out.
+   Result: every surface reads as slightly-imperfect paper. */
 body {
   background: var(--color-background);
   color: var(--color-foreground);
   font-family: var(--font-sans), system-ui, -apple-system, sans-serif;
 }
 
-/* Scrollbar styling */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  /* baseFrequency tuned so the grain is visible up close but reads
+     as overall texture from a normal viewing distance. */
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 240 240'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 0.18 0 0 0 0 0.14 0 0 0 0 0.09 0 0 0 0.55 0'/></filter><rect width='100%25' height='100%25' filter='url(%23n)'/></svg>");
+  opacity: 0.18;
+  mix-blend-mode: multiply;
+}
+
+/* Push every real page above the noise layer. */
+body > * {
+  position: relative;
+  z-index: 1;
+}
+
+/* Scrollbar. Sepia thumb on cream track to fit the paper feel. */
 ::-webkit-scrollbar {
-  width: 6px;
+  width: 8px;
 }
 ::-webkit-scrollbar-track {
-  background: var(--color-background);
+  background: var(--color-background-secondary);
 }
 ::-webkit-scrollbar-thumb {
   background: var(--color-border);
-  border-radius: 3px;
 }
 ::-webkit-scrollbar-thumb:hover {
   background: var(--color-border-hover);
 }
 
-/* Selection */
 ::selection {
   background: var(--color-mint-glow);
-  color: var(--color-mint);
+  color: var(--color-foreground);
 }
 
-/* Trending podium collage. Animation runs constantly but is paused by
-   default; hover toggles it to "running" via `animation-play-state`.
-   Crucially, leaving hover only pauses — it does NOT reset the
-   transform, so the next hover resumes from exactly where it stopped.
-   The row holds the collage images twice over so translateX(-50%)
-   visually matches the start position (no visible jump on loop). */
+/* ── Stamp shadow ────────────────────────────────────────────────
+   Every card on the site uses this to look like a postage stamp
+   lifted slightly off the page. Lifts further on hover. Layered
+   shadows give the warm under-light + soft ambient feel; tinted
+   with the ink color so it never reads as a generic gray drop
+   shadow. */
+.stamp-shadow {
+  box-shadow:
+    0 1px 0 rgba(45, 36, 24, 0.04),
+    0 2px 4px -1px rgba(45, 36, 24, 0.06),
+    0 6px 14px -4px rgba(45, 36, 24, 0.10);
+  transition: box-shadow 200ms ease, transform 200ms ease;
+}
+.stamp-shadow:hover {
+  box-shadow:
+    0 1px 0 rgba(45, 36, 24, 0.06),
+    0 4px 8px -2px rgba(45, 36, 24, 0.08),
+    0 12px 28px -6px rgba(45, 36, 24, 0.14);
+  transform: translateY(-2px);
+}
+
+/* ── Hairline divider with little circle endpoints ────────────────
+   Mimics the `○ ──── baoling Nº 001 ──── ○` motif on the
+   postcards themselves. Drop a <div class="postcard-divider"> with
+   optional text children for the same effect anywhere on the site. */
+.postcard-divider {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  color: var(--color-foreground-secondary);
+  font-size: 0.75rem;
+}
+.postcard-divider::before,
+.postcard-divider::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--color-border);
+  background-image: linear-gradient(
+    to right,
+    transparent,
+    var(--color-border) 8px,
+    var(--color-border) calc(100% - 8px),
+    transparent
+  );
+}
+.postcard-divider::before {
+  background-image: radial-gradient(circle 3px at left center, var(--color-border) 99%, transparent 100%),
+    linear-gradient(
+      to right,
+      transparent 8px,
+      var(--color-border) 8px,
+      var(--color-border) 100%
+    );
+}
+.postcard-divider::after {
+  background-image: radial-gradient(circle 3px at right center, var(--color-border) 99%, transparent 100%),
+    linear-gradient(
+      to right,
+      var(--color-border) 0,
+      var(--color-border) calc(100% - 8px),
+      transparent calc(100% - 8px)
+    );
+}
+
+/* ── Trending podium collage drift (unchanged behavior) ─────────── */
 @keyframes collage-drift {
   from { transform: translateX(0); }
   to { transform: translateX(-50%); }
@@ -64,17 +159,11 @@ body {
   animation-play-state: running;
 }
 
-/* Metallic-finish borders for the trending podium. Implemented as an
-   outer wrapper with a tall multi-stop linear gradient as its
-   background, plus an inner element with the actual card background —
-   so the 4px "border" you see is just the gradient peeking around the
-   inner box.
-
-   The background is sized at 200% width and the animation slides it
-   continuously, so a "highlight band" sweeps slowly across the metal.
-   The gradient itself is dark → bright → near-white → bright → dark
-   repeated twice so it tiles seamlessly when background-position wraps.
-   `border-image` would be cleaner conceptually but isn't animatable. */
+/* ── Trending podium metallic borders ─────────────────────────────
+   Gold/silver/bronze gradient wrappers behind the card. Background
+   slides slowly so a highlight band sweeps across the metal. Kept
+   from the previous design because "podium = ranked = metal" still
+   reads correctly against cream paper. */
 .podium-border {
   position: relative;
   padding: 4px;
@@ -84,67 +173,28 @@ body {
 .podium-gold {
   background-image: linear-gradient(
     115deg,
-    #3d2e0a 0%,
-    #6b5320 6%,
-    #b8860b 12%,
-    #f3c969 18%,
-    #fff5c8 22%,
-    #f3c969 26%,
-    #b8860b 32%,
-    #6b5320 38%,
-    #3d2e0a 50%,
-    #6b5320 56%,
-    #b8860b 62%,
-    #f3c969 68%,
-    #fff5c8 72%,
-    #f3c969 76%,
-    #b8860b 82%,
-    #6b5320 88%,
-    #3d2e0a 100%
+    #3d2e0a 0%, #6b5320 6%, #b8860b 12%, #f3c969 18%, #fff5c8 22%,
+    #f3c969 26%, #b8860b 32%, #6b5320 38%, #3d2e0a 50%, #6b5320 56%,
+    #b8860b 62%, #f3c969 68%, #fff5c8 72%, #f3c969 76%, #b8860b 82%,
+    #6b5320 88%, #3d2e0a 100%
   );
 }
 .podium-silver {
   background-image: linear-gradient(
     115deg,
-    #2e2e2e 0%,
-    #5a5a5a 6%,
-    #9c9c9c 12%,
-    #d8d8d8 18%,
-    #ffffff 22%,
-    #d8d8d8 26%,
-    #9c9c9c 32%,
-    #5a5a5a 38%,
-    #2e2e2e 50%,
-    #5a5a5a 56%,
-    #9c9c9c 62%,
-    #d8d8d8 68%,
-    #ffffff 72%,
-    #d8d8d8 76%,
-    #9c9c9c 82%,
-    #5a5a5a 88%,
-    #2e2e2e 100%
+    #2e2e2e 0%, #5a5a5a 6%, #9c9c9c 12%, #d8d8d8 18%, #ffffff 22%,
+    #d8d8d8 26%, #9c9c9c 32%, #5a5a5a 38%, #2e2e2e 50%, #5a5a5a 56%,
+    #9c9c9c 62%, #d8d8d8 68%, #ffffff 72%, #d8d8d8 76%, #9c9c9c 82%,
+    #5a5a5a 88%, #2e2e2e 100%
   );
 }
 .podium-bronze {
   background-image: linear-gradient(
     115deg,
-    #1f0f04 0%,
-    #4a230d 6%,
-    #8a4a22 12%,
-    #c87a3c 18%,
-    #f0c594 22%,
-    #c87a3c 26%,
-    #8a4a22 32%,
-    #4a230d 38%,
-    #1f0f04 50%,
-    #4a230d 56%,
-    #8a4a22 62%,
-    #c87a3c 68%,
-    #f0c594 72%,
-    #c87a3c 76%,
-    #8a4a22 82%,
-    #4a230d 88%,
-    #1f0f04 100%
+    #1f0f04 0%, #4a230d 6%, #8a4a22 12%, #c87a3c 18%, #f0c594 22%,
+    #c87a3c 26%, #8a4a22 32%, #4a230d 38%, #1f0f04 50%, #4a230d 56%,
+    #8a4a22 62%, #c87a3c 68%, #f0c594 72%, #c87a3c 76%, #8a4a22 82%,
+    #4a230d 88%, #1f0f04 100%
   );
 }
 @keyframes podium-shimmer {
@@ -152,20 +202,18 @@ body {
   100% { background-position: 200% 50%; }
 }
 
-/* Featured card border. Subtle mint "breathing" effect: the border
-   color and surrounding glow softly pulse on a slow loop. Less loud
-   than the podium's metallic shimmer (which says "ranked") and more
-   "platform-vouched" (which says "minti picked this").
-   Hover boosts the brightness so the user gets feedback the card is
-   interactive. */
+/* ── Featured card border ─────────────────────────────────────────
+   Subtle sage "breathing" effect. Tuned to the new pastel palette
+   (107/152/116 RGB = sage mint). Less loud than the podium's
+   metallic shimmer; just a soft pulse that says "platform-picked." */
 @keyframes featured-breathe {
   0%, 100% {
-    border-color: rgba(74, 222, 128, 0.25);
-    box-shadow: 0 0 12px rgba(74, 222, 128, 0.06);
+    border-color: rgba(107, 152, 116, 0.45);
+    box-shadow: 0 0 12px rgba(107, 152, 116, 0.10);
   }
   50% {
-    border-color: rgba(74, 222, 128, 0.55);
-    box-shadow: 0 0 22px rgba(74, 222, 128, 0.18);
+    border-color: rgba(107, 152, 116, 0.85);
+    box-shadow: 0 0 22px rgba(107, 152, 116, 0.25);
   }
 }
 .featured-breathe {

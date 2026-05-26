@@ -50,7 +50,7 @@ export function EvmfsTokenCard({
     <Link
       href={`/collection/${contractAddress}/${tokenId}`}
       onClick={onClick}
-      className="group block border border-border overflow-hidden bg-background-secondary hover:border-border-hover transition-colors"
+      className="stamp-shadow group block border border-border overflow-hidden bg-background-secondary hover:border-border-hover transition-colors"
     >
       <div className="aspect-square bg-background-tertiary">
         {viewerUri ? (

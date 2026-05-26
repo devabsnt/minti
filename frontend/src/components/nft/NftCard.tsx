@@ -52,7 +52,7 @@ export function NftCard({
     <Link
       href={`/collection/${contractAddress}/${tokenId}`}
       onClick={onClick}
-      className="group block border border-border overflow-hidden bg-background-secondary hover:border-border-hover transition-colors"
+      className="stamp-shadow group block border border-border overflow-hidden bg-background-secondary hover:border-border-hover transition-colors"
     >
       <NftImage
         // Force remount when we swap from synthesized to fetched URL so
