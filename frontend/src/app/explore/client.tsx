@@ -710,10 +710,12 @@ function TrendingPodiumCard({
               />
             </div>
             <div className="flex items-center gap-1.5">
-              {/* Vermillion stamp box with the gradient rank inside.
-                  Gold-on-red is the classic postal "first class" look,
-                  and the metallic gradient pops harder against the red
-                  ground than it did against cream. */}
+              {/* Vermillion stamp box, gold rank numeral inside. All
+                  three podium positions use the same gold gradient
+                  because it has the strongest contrast against the
+                  red ground - silver and especially bronze were hard
+                  to read. The medal-tier hierarchy still reads via
+                  the border-color of the surrounding podium card. */}
               <span
                 className="inline-flex items-baseline gap-1 px-2.5 py-1 font-serif"
                 style={{
@@ -725,7 +727,7 @@ function TrendingPodiumCard({
               >
                 <span className="text-[10px] text-[#fff5d6]/85">Nº</span>
                 <span
-                  className={`text-lg font-bold bg-gradient-to-r ${tier.gradient} bg-clip-text text-transparent`}
+                  className="text-lg font-bold bg-gradient-to-r from-yellow-200 to-yellow-500 bg-clip-text text-transparent"
                 >
                   {rank.toString().padStart(2, "0")}
                 </span>

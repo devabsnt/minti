@@ -14,8 +14,8 @@ export default function HomePage() {
           paper backdrop + serif headline reads as "editorial album"
           rather than tech demo. */}
       <section className="flex flex-col items-center text-center pt-20 pb-24 md:pt-28 md:pb-32">
-        <p className="font-serif text-2xl mb-4 tracking-tight">
-          <span className="text-mint italic">minti</span>
+        <p className="font-serif text-5xl md:text-6xl font-bold mb-6 tracking-tight">
+          <span className="text-mint">minti</span>
           <span className="text-foreground">.art</span>
         </p>
         <Image

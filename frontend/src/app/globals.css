@@ -62,27 +62,24 @@ body::before {
   mix-blend-mode: multiply;
 }
 
-/* Watermark layer. Two repeating patterns multiplied together:
-   - bamboo-watermark.svg (scattered bamboo motifs, sepia)
-   - postmark-motif.png (tiny baoling silhouette, the same one used
-     on the postcard NFTs)
-   Both at very low opacity so they read as paper-watermark, not
-   surface decoration. The two have different tile sizes and offset
-   positions so the combined pattern feels irregular. */
+/* Watermark layer. One composited PNG tile (400x400) containing:
+   - the baoling postmark motif (top-left of the tile)
+   - the Monad mark, recolored to match the postmark silhouette
+     (bottom-right of the tile, offset half a tile so the grid
+     alternates between motifs)
+   The combined pattern reads as a quiet stationery watermark when
+   tiled across the page, with comfortable breathing room between
+   each motif. */
 body::after {
   content: "";
   position: fixed;
   inset: 0;
   pointer-events: none;
   z-index: 0;
-  color: var(--color-foreground-secondary);
-  background-image:
-    url("/bamboo-watermark.svg"),
-    url("/postmark-motif.png");
-  background-repeat: repeat, repeat;
-  background-size: 360px 360px, 90px 90px;
-  background-position: 0 0, 140px 110px;
-  opacity: 0.07;
+  background-image: url("/watermark.png");
+  background-repeat: repeat;
+  background-size: 400px 400px;
+  opacity: 0.075;
   mix-blend-mode: multiply;
 }
 
@@ -307,7 +304,9 @@ body > * {
 .side-bamboo-left,
 .side-bamboo-right {
   position: absolute;
-  bottom: -1vh;
+  /* Extend slightly below the viewport so the bases of the stalks
+     bleed past the bottom edge instead of being cleanly cut off. */
+  bottom: -4vh;
   width: clamp(140px, 18vw, 240px);
 }
 .side-bamboo-left svg,
@@ -349,51 +348,45 @@ body > * {
 }
 .corner-bamboo-side {
   position: absolute;
-  bottom: 0;
-  width: 52vw;
-  max-width: 720px;
-  height: 90vh;
-  max-height: 900px;
+  /* Extend slightly below the viewport so the bases of the stalks
+     bleed past the bottom edge - looks rooted rather than cropped. */
+  bottom: -4vh;
+  height: 60vh;
+  max-height: 640px;
+  width: 0;
 }
 .corner-bamboo-left {
   left: 0;
 }
 .corner-bamboo-right {
   right: 0;
-  transform: scaleX(-1);
 }
-.bamboo-layer {
+.bamboo-bushel {
   position: absolute;
-  inset: 0;
-  pointer-events: none;
-  transition: transform 60ms linear;
+  bottom: 0;
+  height: 100%;
+  transform-origin: bottom center;
+  /* At rest the bushel leans inward at `--lean-base`. As the user
+     scrolls down (--bamboo-progress rises 0 -> 1), the rotation
+     interpolates toward zero (upright). No translation - the
+     bushel stays anchored at the side. */
+  transform: rotate(
+    calc(var(--lean-base, 0deg) * (1 - var(--bamboo-progress, 0)))
+  );
+  transition: transform 80ms linear;
   will-change: transform;
 }
-.bamboo-layer svg {
+.bamboo-bushel svg {
   display: block;
   width: 100%;
   height: 100%;
-}
-.bamboo-back {
-  transform: translateX(calc(var(--bamboo-progress, 0) * -25%));
-  filter:
-    drop-shadow(0 0 1px rgba(45, 36, 24, 0.18))
-    drop-shadow(0 8px 14px rgba(45, 36, 24, 0.08));
-  opacity: 0.85;
-}
-.bamboo-front {
-  transform:
-    translateX(calc(var(--bamboo-progress, 0) * -55%))
-    rotate(calc(var(--bamboo-progress, 0) * -6deg));
-  transform-origin: bottom left;
   filter:
     drop-shadow(0 0 1px rgba(45, 36, 24, 0.35))
-    drop-shadow(4px 6px 0 rgba(45, 36, 24, 0.10))
-    drop-shadow(0 14px 22px rgba(45, 36, 24, 0.15));
+    drop-shadow(3px 4px 0 rgba(45, 36, 24, 0.10))
+    drop-shadow(0 10px 16px rgba(45, 36, 24, 0.12));
 }
 @media (prefers-reduced-motion: reduce) {
-  .bamboo-back,
-  .bamboo-front {
+  .bamboo-bushel {
     transition: none;
     transform: none;
   }
