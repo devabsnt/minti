@@ -480,6 +480,7 @@ function CollectionPage({
                               token.tokenId.toString(),
                             ),
                             attributes: [],
+                            raw: {},
                           }
                         : undefined)
                     }
@@ -901,6 +902,7 @@ function OwnedCollectionCard({
         description: "",
         image: imageUrlTemplate.replace(/\{id\}/g, tokenId.toString()),
         attributes: [],
+        raw: {},
       }
     : fetched;
   return (
@@ -938,6 +940,7 @@ function ListingCardWithMetadata({
         description: "",
         image: imageUrlTemplate.replace(/\{id\}/g, tokenId.toString()),
         attributes: [],
+        raw: {},
       }
     : fetched;
   return (
