@@ -72,14 +72,28 @@ export function CornerBamboo() {
       style={{ ["--bamboo-progress" as string]: 0 }}
     >
       <div className="corner-bamboo-side corner-bamboo-left">
-        {BUSHELS.map((b, i) => (
-          <BushelSlot key={i} {...b} side="left" />
-        ))}
+        <div className="bamboo-back-layer">
+          {BACK_BUSHELS.map((b, i) => (
+            <BushelSlot key={i} {...b} side="left" />
+          ))}
+        </div>
+        <div className="bamboo-front-layer">
+          {FRONT_BUSHELS.map((b, i) => (
+            <BushelSlot key={i} {...b} side="left" />
+          ))}
+        </div>
       </div>
       <div className="corner-bamboo-side corner-bamboo-right">
-        {BUSHELS.map((b, i) => (
-          <BushelSlot key={i} {...b} side="right" />
-        ))}
+        <div className="bamboo-back-layer">
+          {BACK_BUSHELS.map((b, i) => (
+            <BushelSlot key={i} {...b} side="right" />
+          ))}
+        </div>
+        <div className="bamboo-front-layer">
+          {FRONT_BUSHELS.map((b, i) => (
+            <BushelSlot key={i} {...b} side="right" />
+          ))}
+        </div>
       </div>
     </div>
   );
@@ -100,13 +114,23 @@ interface BushelDef {
   variant: "a" | "b" | "c";
 }
 
-// Insets pushed further outward so the bushels frame the page
-// edges instead of intruding into the central content area. Negative
-// insets mean the bushel base sits past the viewport edge entirely.
-const BUSHELS: BushelDef[] = [
-  { inset: -70, width: 220, leanBase: 22, variant: "a" },
-  { inset: 10, width: 260, leanBase: 14, variant: "b" },
-  { inset: 110, width: 200, leanBase: 18, variant: "c" },
+// Two layers of bushels per side. The back layer sits behind the
+// front layer, smaller and more transparent, to give the cluster
+// real depth. Inner-most insets are pushed further outward (smaller
+// positive values) so they don't intrude on page content.
+const FRONT_BUSHELS: BushelDef[] = [
+  { inset: -80, width: 220, leanBase: 22, variant: "a" },
+  { inset: -10, width: 260, leanBase: 14, variant: "b" },
+  { inset: 70, width: 200, leanBase: 18, variant: "c" },
+];
+
+// Back-layer bushels sit slightly further inward than the front so
+// they peek between the front stalks. Smaller width + lower opacity
+// keep them visually subordinate (handled in CSS via `.bamboo-back-layer`).
+const BACK_BUSHELS: BushelDef[] = [
+  { inset: -50, width: 180, leanBase: 26, variant: "b" },
+  { inset: 20, width: 200, leanBase: 16, variant: "c" },
+  { inset: 100, width: 170, leanBase: 12, variant: "a" },
 ];
 
 function BushelSlot({
@@ -163,7 +187,7 @@ function BushelSvg({
       viewBox="0 0 240 560"
       width="100%"
       height="100%"
-      preserveAspectRatio="xMinYEnd meet"
+      preserveAspectRatio="xMinYMax meet"
       role="img"
       aria-label="Bamboo"
       style={mirror ? { transform: "scaleX(-1)" } : undefined}

@@ -67,7 +67,11 @@ export function useNftMetadata(
     enabled: !!nftContract && tokenId != null,
     staleTime: METADATA_STALE_TIME,
     gcTime: METADATA_STALE_TIME,
-    retry: 2,
+    // 1 retry only. Most metadata fetch failures are CORS (the host
+    // doesn't send Access-Control-Allow-Origin) or 404, neither of
+    // which gets better with retries - we'd just spam the console.
+    // The single retry handles the rare transient network blip.
+    retry: 1,
   });
 }
 

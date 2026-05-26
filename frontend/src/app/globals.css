@@ -356,6 +356,32 @@ body > * {
     drop-shadow(0 10px 16px rgba(45, 36, 24, 0.12));
 }
 
+/* Two-layer cluster. The back layer sits behind the front layer
+   (same positioning but lower z), at reduced opacity and slightly
+   bleached so it reads as "further away." Both share the same sway
+   animation; the back layer also has a slight scale-down to
+   reinforce the depth illusion. */
+.bamboo-back-layer,
+.bamboo-front-layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+.bamboo-back-layer {
+  z-index: 1;
+  opacity: 0.55;
+  filter: brightness(1.05) saturate(0.7) blur(0.3px);
+}
+.bamboo-back-layer .bamboo-bushel {
+  transform: rotate(
+    calc(var(--lean-base, 0deg) * (1 - var(--bamboo-progress, 0)))
+  )
+  scale(0.85);
+}
+.bamboo-front-layer {
+  z-index: 2;
+}
+
 /* Gentle breeze sway. Each bushel's inner wrapper oscillates
    slowly around its base, ±1.5deg with a long ease-in-out cycle.
    Bushels stagger via nth-child animation-delays so they don't all

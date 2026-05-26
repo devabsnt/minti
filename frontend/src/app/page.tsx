@@ -70,7 +70,7 @@ export default function HomePage() {
           <StepCard
             step="1"
             title="Drop your folder"
-            description="Upload metadata and images. Minti gzips and stores each byte as an Ethereum/Monad event log via EVMFS. No IPFS, no S3, no centralized service."
+            description="Upload metadata and images. Minti gzips and stores each byte as a Monad event log via EVMFS. No IPFS, no S3, no centralized service."
           />
           <StepCard
             step="2"

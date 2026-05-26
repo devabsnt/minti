@@ -827,17 +827,19 @@ function TokenDetailPage({
   const metadata = isEvmfs ? evmfsMetadata : legacyMetadata;
   const isLoading = isEvmfs ? !evmfsMetadata && !viewerUri : legacyLoading;
 
-  // CORS fallback. Some collections host their metadata JSON on a
-  // host that doesn't return Access-Control-Allow-Origin (scatter's
-  // instareveal API is the current offender). In that case the
-  // tokenURI fetch from `useNftMetadata` fails and we end up with no
-  // image. But the gallery card uses the indexer's imageUrlTemplate
-  // and renders an `<img>` directly, which doesn't trigger CORS at
-  // all - browsers don't enforce CORS on image loads for display.
-  // So we pull the same template here and synthesize an image URL
-  // as a fallback. The text fields (description, attributes) stay
-  // empty when metadata fetch fails; we can't recover those without
-  // a CORS-friendly endpoint.
+  // Image resolution. We prefer the indexer-synthesized URL over the
+  // live tokenURI fetch because:
+  //   - The gallery already uses the synthesized form via the same
+  //     `imageUrlTemplate`, so the modal image matches what the user
+  //     just clicked from.
+  //   - The live fetch goes through `useNftMetadata` -> JSON fetch.
+  //     Some collections (e.g. scatter's `instareveal` API) don't
+  //     send CORS headers, so the fetch fails and we end up retrying
+  //     repeatedly while the modal sits empty. Synthesizing avoids
+  //     that round trip for the image entirely.
+  // The metadata fetch still runs in the background to pick up
+  // description / attributes when available, but the image renders
+  // immediately from the synthesized URL.
   const { data: indexerCollData } = useIndexerCollection(collectionAddress);
   const imageUrlTemplate = indexerCollData?.collection?.imageUrlTemplate;
   const sampleImageUrl = indexerCollData?.collection?.sampleImageUrl;
@@ -847,7 +849,7 @@ function TokenDetailPage({
     }
     return sampleImageUrl ?? "";
   }, [imageUrlTemplate, sampleImageUrl, tokenId]);
-  const effectiveImage = metadata?.image || synthesizedImage;
+  const effectiveImage = synthesizedImage || metadata?.image || "";
   const { data: bids } = useCollectionBids(collectionAddress);
   const { data: offers } = useCollectionOffers(collectionAddress);
 

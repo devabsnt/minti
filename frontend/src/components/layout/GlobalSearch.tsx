@@ -171,50 +171,6 @@ export function GlobalSearch() {
 
   return (
     <div ref={containerRef} className="relative w-full">
-      {/* Feudal-Chinese roof ornament above the search bar. Curved
-          tile line with upturned eaves, vermillion ridge band. Pure
-          decoration; pointer-events disabled so it never intercepts
-          clicks on the input. */}
-      <svg
-        aria-hidden
-        viewBox="0 0 240 24"
-        preserveAspectRatio="none"
-        className="absolute left-0 right-0 -top-[10px] w-full h-3 pointer-events-none"
-      >
-        {/* Eave underside (darker, recessed) */}
-        <path
-          d="M -4 22 Q 120 -6 244 22 L 244 24 L -4 24 Z"
-          fill="#2d2418"
-          opacity="0.85"
-        />
-        {/* Roof tiles (sepia brown) */}
-        <path
-          d="M -4 20 Q 120 -10 244 20 L 244 23 L -4 23 Z"
-          fill="#8a4a22"
-        />
-        {/* Highlight stripe along the top edge */}
-        <path
-          d="M -4 18 Q 120 -12 244 18"
-          stroke="#c87a3c"
-          strokeWidth="1.2"
-          fill="none"
-        />
-        {/* Ridge accent in vermillion at the apex */}
-        <rect x="116" y="2" width="8" height="3" fill="#c53a2c" />
-        {/* Upturned eaves at the ends (small flicks) */}
-        <path
-          d="M -4 22 L -10 16 Q -12 13 -8 14"
-          stroke="#2d2418"
-          strokeWidth="1.5"
-          fill="#8a4a22"
-        />
-        <path
-          d="M 244 22 L 250 16 Q 252 13 248 14"
-          stroke="#2d2418"
-          strokeWidth="1.5"
-          fill="#8a4a22"
-        />
-      </svg>
       <div className="relative">
         <input
           ref={inputRef}

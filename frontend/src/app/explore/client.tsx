@@ -71,11 +71,9 @@ export function ExploreClient() {
   const q = isSearchingByText ? trimmed : undefined;
 
   // ── Featured collections (editorial picks) ─────────────────────────
+  // Featured collections still appear in Trending and Long-tail when
+  // they qualify; the Featured section is additive, not exclusive.
   const { data: featuredEntries } = useFeaturedCollections();
-  const featuredAddresses = useMemo(
-    () => new Set((featuredEntries ?? []).map((e) => e.address.toLowerCase())),
-    [featuredEntries],
-  );
 
   // ── Trending hero (top 10 explore-eligible by trending) ───────────
   // Fetching more than 10 because we then filter out:
@@ -104,7 +102,6 @@ export function ExploreClient() {
   const trendingHero = useMemo(() => {
     const rows = trendingData?.collections ?? [];
     return rows
-      .filter((c) => !featuredAddresses.has(c.address.toLowerCase()))
       .filter((c) => !isHidden(c.address))
       .filter((c) => {
         const snap = snapshotByAddress.get(c.address.toLowerCase());
@@ -118,7 +115,7 @@ export function ExploreClient() {
         return true;
       })
       .slice(0, 10);
-  }, [trendingData, featuredAddresses, isHidden, snapshotByAddress]);
+  }, [trendingData, isHidden, snapshotByAddress]);
 
   // Trend arrows: persist the previous rank-by-address mapping to
   // localStorage so we can show ▲/▼ when a collection moves between
@@ -183,10 +180,8 @@ export function ExploreClient() {
     });
   const longTail = useMemo(() => {
     const rows = longTailData?.collections ?? [];
-    return rows
-      .filter((c) => !featuredAddresses.has(c.address.toLowerCase()))
-      .filter((c) => !isHidden(c.address));
-  }, [longTailData, featuredAddresses, isHidden]);
+    return rows.filter((c) => !isHidden(c.address));
+  }, [longTailData, isHidden]);
   const longTailTotal = longTailData?.pagination.total ?? 0;
   const longTailTotalPages = Math.ceil(longTailTotal / LONG_TAIL_PAGE_SIZE);
 
@@ -399,9 +394,18 @@ export function ExploreClient() {
 function FeaturedCard({ entry }: { entry: FeaturedCollectionEntry }) {
   const { data: collData } = useIndexerCollection(entry.address);
   const collection = collData?.collection;
+  const playPageTurn = usePageTurnSound();
+  const playPaperHover = usePaperHoverSound();
+  const collageImages = useMemo(
+    () => (collection ? buildCollageImages(collection, 8) : []),
+    [collection],
+  );
+  const driftable = collageImages.length > 1;
+  const collageRow = collageImages.length > 0
+    ? collageImages.concat(collageImages)
+    : [];
+
   if (!collection) {
-    // Indexer hasn't seen this contract yet (newly deployed). Render a
-    // minimal placeholder so the slot doesn't pop in later.
     return (
       <div className="block border border-mint/30 overflow-hidden bg-background-secondary p-4">
         <div className="text-sm text-foreground-secondary">
@@ -417,8 +421,6 @@ function FeaturedCard({ entry }: { entry: FeaturedCollectionEntry }) {
   const uniqueHolders = collection.uniqueHolders ?? 0;
   const supply = collection.totalSupply ? Number(collection.totalSupply) : 0;
   const blurb = entry.blurb?.trim();
-  const playPageTurn = usePageTurnSound();
-  const playPaperHover = usePaperHoverSound();
 
   return (
     <a
@@ -429,14 +431,45 @@ function FeaturedCard({ entry }: { entry: FeaturedCollectionEntry }) {
         }
       }}
       onPointerEnter={playPaperHover}
-      className="featured-breathe stamp-shadow group relative block border overflow-hidden bg-background-secondary transition-all"
+      // Same overall structure as TrendingPodiumCard but with the
+      // breathing mint border instead of metallic shimmer, and a
+      // Featured pill + postmark instead of the Nº rank stamp.
+      className="group collage-drift-on-hover featured-breathe stamp-shadow relative block border overflow-hidden bg-background-secondary transition-all"
     >
-      <div className="relative flex gap-4 p-4 items-start">
-        {/* Postmark stamp + FEATURED label in the top-right. The
-            postmark is the same circular "baolings" seal used on the
-            postcard NFTs; rendered at a slight rotation and reduced
-            opacity so it reads as stamped onto the paper instead of
-            pasted on top. */}
+      <div className="relative overflow-hidden">
+        {/* Collage background - same evenly-sampled token images as
+            on the podium cards, with the same drift-on-hover. Gives
+            featured collections matching visual weight to top trending. */}
+        <div className="absolute inset-0 overflow-hidden pointer-events-none select-none">
+          <div className="collage-drift-track flex h-full w-max">
+            {collageRow.map((url, i) => (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img
+                key={i}
+                src={url}
+                alt=""
+                aria-hidden
+                loading="lazy"
+                decoding="async"
+                // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                {...({ fetchpriority: "low" } as any)}
+                referrerPolicy="no-referrer"
+                className={
+                  driftable
+                    ? "h-full w-auto flex-shrink-0 object-contain"
+                    : "h-full w-screen max-w-none flex-shrink-0 object-cover"
+                }
+              />
+            ))}
+          </div>
+        </div>
+        {/* Dimming so the collage stays atmospheric. Same gradient
+            shape as podium cards but lighter (cream paper bg shows
+            more) so the featured cards feel airier than ranked ones. */}
+        <div className="absolute inset-0 bg-background-secondary/55" />
+        <div className="absolute inset-0 bg-gradient-to-r from-background-secondary via-background-secondary/70 to-background-secondary/30" />
+
+        {/* Featured pill + postmark stamp in the top-right. */}
         <div
           className="absolute top-3 right-4 flex items-center gap-2 z-10 pointer-events-none"
           aria-hidden
@@ -452,45 +485,65 @@ function FeaturedCard({ entry }: { entry: FeaturedCollectionEntry }) {
           />
         </div>
 
-        <div className="w-28 h-28 sm:w-32 sm:h-32 overflow-hidden border border-border bg-background-tertiary flex-shrink-0">
-          <NftImage
-            src={collection.sampleImageUrl ?? ""}
-            alt={name}
-            className="w-full h-full"
-          />
-        </div>
-        <div className="flex-1 min-w-0 flex flex-col gap-1 pr-4 sm:pr-0">
-          <h3 className="text-2xl font-bold truncate">{name}</h3>
-          {symbol && (
-            <div className="text-sm text-foreground-secondary truncate">
-              {symbol}
-            </div>
-          )}
-          {blurb && (
-            <p className="text-sm italic text-mint/90 truncate mt-1">
-              {blurb}
-            </p>
-          )}
-          <div className="flex flex-wrap items-center gap-x-5 gap-y-1 mt-3 text-sm">
-            <span>
-              <span className="font-medium">
-                {formatCompact(transferCount)}
-              </span>
-              <span className="text-foreground-secondary ml-1.5">transfers</span>
-            </span>
-            <span>
-              <span className="font-medium">
-                {formatNumber(uniqueHolders)}
-              </span>
-              <span className="text-foreground-secondary ml-1.5">holders</span>
-            </span>
-            {supply > 0 && (
-              <span>
-                <span className="font-medium">{formatNumber(supply)}</span>
-                <span className="text-foreground-secondary ml-1.5">items</span>
-              </span>
+        <div className="relative z-10 flex gap-4 p-4 items-start">
+          <div className="w-28 h-28 sm:w-32 sm:h-32 overflow-hidden border border-border bg-background-tertiary flex-shrink-0">
+            <NftImage
+              src={collection.sampleImageUrl ?? ""}
+              alt={name}
+              className="w-full h-full"
+            />
+          </div>
+          <div className="flex-1 min-w-0 flex flex-col gap-1 pr-4 sm:pr-0">
+            <h3 className="text-xl sm:text-2xl font-bold truncate">{name}</h3>
+            {symbol && (
+              <div className="text-sm text-foreground-secondary truncate">
+                {symbol}
+              </div>
             )}
-            <FloorPrice contractAddress={collection.address} />
+            {blurb && (
+              <p className="text-sm italic text-mint/90 truncate mt-1">
+                {blurb}
+              </p>
+            )}
+            <div className="flex flex-wrap items-center gap-x-5 gap-y-1 mt-3 text-sm">
+              <span>
+                <span className="font-medium">
+                  {formatCompact(transferCount)}
+                </span>
+                <span className="text-foreground-secondary ml-1.5">
+                  transfers
+                </span>
+              </span>
+              <span>
+                <span className="font-medium">
+                  {formatNumber(uniqueHolders)}
+                </span>
+                <span className="text-foreground-secondary ml-1.5">holders</span>
+              </span>
+              {supply > 0 && (
+                <span>
+                  <span className="font-medium">{formatNumber(supply)}</span>
+                  <span className="text-foreground-secondary ml-1.5">items</span>
+                </span>
+              )}
+              <FloorPrice contractAddress={collection.address} />
+            </div>
+            {/* Same 24h activity sparkline as the podium cards. */}
+            <div
+              className="mt-3 flex items-center gap-3"
+              title="Activity in the last 24 hours"
+            >
+              <div className="flex-1 min-w-0">
+                <ActivitySparkline
+                  contractAddress={collection.address}
+                  width={240}
+                  height={32}
+                />
+              </div>
+              <span className="text-[10px] uppercase tracking-widest text-foreground-secondary">
+                24h
+              </span>
+            </div>
           </div>
         </div>
       </div>
