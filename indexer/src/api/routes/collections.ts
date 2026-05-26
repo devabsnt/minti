@@ -72,20 +72,19 @@ collectionsRoutes.get("/", async (c) => {
   //                           full credit; 500 mints to 1 wallet gets
   //                           near-zero credit.
   //
-  // Multiplicative gating factors (must all be present, not just one):
+  // Multiplicative gating factor:
   //   - sender_diversity_factor : LEAST(1, unique_senders / 30). A
   //                               1-sender airdrop ranks at ~3% of its
   //                               otherwise-equivalent score.
-  //   - concentration_factor    : GREATEST(0.05, 1 - 2 * top1_holder_pct).
-  //                               One wallet at 50%+ of supply zeroes the
-  //                               score; 25%+ knocks it down by half.
-  //                               (top10 dropped — its window-function
-  //                               cost was too high; top1 alone catches
-  //                               the gaming patterns we care about.)
   //
-  // Mint-heavy penalty (additive, on top of multiplicative gates):
-  //   -5 if >85% of activity is mints, -2 if >65%. Catches the
-  //   "drop-and-flip" pattern where almost no secondary trading occurs.
+  // Mint-heavy penalty (additive, catches drop-and-flip collections
+  // where almost no secondary trading occurs):
+  //   -5 if >85% of activity is mints, -2 if >65%.
+  //
+  // (Holder concentration is NOT applied here. The retention-window
+  // tokens table understates concentration for older mints. The
+  // frontend filters out whale-heavy collections from the trending list
+  // using the static snapshot's full-history concentration data.)
   const trendingScoreSql = sql`(
     (LN(1 + GREATEST(0, ${collections.transferCount} - ${collections.mintCount})) * 2.0
       + LN(1 + ${collections.uniqueSenders}) * 2.5
@@ -93,7 +92,6 @@ collectionsRoutes.get("/", async (c) => {
       + LN(1 + ${collections.mintCount}) * 1.5
         * (${collections.uniqueMinters}::float / GREATEST(${collections.mintCount}, 1)))
     * LEAST(1.0, ${collections.uniqueSenders}::float / 30.0)
-    * GREATEST(0.05, 1.0 - 2.0 * ${collections.top1HolderPct})
     - CASE
         WHEN ${collections.transferCount} > 0
          AND ${collections.mintCount}::float / GREATEST(${collections.transferCount}, 1) > 0.85 THEN 5.0

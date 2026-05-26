@@ -22,6 +22,10 @@ import {
   type ApiCollection,
   type SortKey,
 } from "@/hooks/useIndexerCollections";
+import {
+  useCollectionsIndex,
+  type IndexedCollection,
+} from "@/hooks/useCollectionsIndex";
 import { useHiddenCollections } from "@/hooks/useHiddenCollections";
 import { useDebounce } from "@/hooks/useDebounce";
 import { isRegistryDeployed } from "@/lib/evmfs";
@@ -87,21 +91,46 @@ export function ExploreClient() {
   );
 
   // ── Trending hero (top 10 explore-eligible by trending) ───────────
-  // Fetching more than 10 because registry/hidden filters can remove a
-  // few rows; we slice down to 10 after filtering.
+  // Fetching more than 10 because we then filter out:
+  //   - registry-tier collections (shown in the Verified section above)
+  //   - user-hidden collections
+  //   - whale-heavy collections per the static snapshot's concentration
+  //     data (same thresholds as the warnings on the collection page —
+  //     top1 > 50% supply, or top10 > 70%). We do this on the client
+  //     because the snapshot has full-history holder data; the indexer's
+  //     30-day retention window undercounts long-dormant whales.
   const { data: trendingData } = useIndexerCollections({
     tier: 2,
     sort: "trending",
-    limit: 18,
+    limit: 40,
     q,
   });
+  const { data: snapshotIndex } = useCollectionsIndex();
+  const snapshotByAddress = useMemo(() => {
+    const map = new Map<string, IndexedCollection>();
+    for (const c of snapshotIndex?.collections ?? []) {
+      map.set(c.address.toLowerCase(), c);
+    }
+    return map;
+  }, [snapshotIndex]);
   const trendingHero = useMemo(() => {
     const rows = trendingData?.collections ?? [];
     return rows
       .filter((c) => !registryAddresses.has(c.address.toLowerCase()))
       .filter((c) => !isHidden(c.address))
+      .filter((c) => {
+        const snap = snapshotByAddress.get(c.address.toLowerCase());
+        if (!snap) return true; // not in snapshot → no data to filter by, allow
+        if (typeof snap.top1HolderPct === "number" && snap.top1HolderPct > 0.5) {
+          return false;
+        }
+        if (typeof snap.top10HolderPct === "number" && snap.top10HolderPct > 0.7) {
+          return false;
+        }
+        return true;
+      })
       .slice(0, 10);
-  }, [trendingData, registryAddresses, isHidden]);
+  }, [trendingData, registryAddresses, isHidden, snapshotByAddress]);
 
   // ── Long-tail / all collections (paginated) ───────────────────────
   // tier=2 by default; "show hidden" includes tier 1 (real but quieter).

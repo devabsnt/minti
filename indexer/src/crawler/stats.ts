@@ -19,15 +19,14 @@ import { env } from "../env.js";
  *   - unique_minters: distinct `to_addr` for mint events. Lets the
  *     trending score reward broad mint participation while ignoring
  *     single-wallet farm mints.
- *   - top1_holder_pct: share of supply held by the single largest
- *     wallet. Computed by grouping tokens by owner and taking
- *     MAX(balance) / SUM(balance) per contract — cheap aggregate, no
- *     window function. (We tried `top10_holder_pct` via ROW_NUMBER
- *     window function but it never finished on the basic Railway tier.
- *     The single-wallet signal alone catches the gaming patterns we
- *     care about.)
  *
- * Cost: a few CTEs + UPDATE. Postgres handles it well with the existing
+ * (Holder concentration metrics — `top1_holder_pct` / `top10_holder_pct`
+ * — are NOT computed here. The retention-window-based tokens table
+ * understates true concentration for older mints anyway. The frontend
+ * filters trending against the static snapshot's concentration data
+ * instead, which has full-history coverage.)
+ *
+ * Cost: simple CTEs + UPDATE. Postgres handles it well with the existing
  * indexes on activity(contract, block_number) and tokens(contract).
  * For 30k collections + millions of rows, expect a few seconds.
  */
@@ -49,19 +48,11 @@ export async function refreshStats(): Promise<{ updated: number; elapsedMs: numb
       FROM activity
       GROUP BY contract
     ),
-    balances AS (
-      SELECT contract, owner, COUNT(*)::bigint AS balance
-      FROM tokens
-      WHERE owner IS NOT NULL AND owner <> '${ZERO}'
-      GROUP BY contract, owner
-    ),
     holder_stats AS (
       SELECT
         contract,
-        COUNT(*)::int AS unique_holders,
-        SUM(balance)::bigint AS total_held,
-        MAX(balance)::bigint AS top1_balance
-      FROM balances
+        COUNT(DISTINCT owner) FILTER (WHERE owner IS NOT NULL AND owner <> '${ZERO}')::int AS unique_holders
+      FROM tokens
       GROUP BY contract
     )
     UPDATE collections c
@@ -71,11 +62,6 @@ export async function refreshStats(): Promise<{ updated: number; elapsedMs: numb
       unique_senders = COALESCE(a.unique_senders, 0),
       unique_minters = COALESCE(a.unique_minters, 0),
       unique_holders = COALESCE(h.unique_holders, 0),
-      top1_holder_pct = CASE
-        WHEN h.total_held > 0 THEN (h.top1_balance::float / h.total_held)::real
-        ELSE 0
-      END,
-      top10_holder_pct = 0,
       updated_at = now()
     FROM activity_stats a
     FULL OUTER JOIN holder_stats h USING (contract)
