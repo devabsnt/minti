@@ -1,24 +1,9 @@
-/**
- * Cloudflare worker base. Kept ONLY for the `/proxy?url=` CORS-proxy
- * endpoint that lets us read centralized metadata hosts (scatter.art,
- * lootgo.app, S3/R2 buckets, etc.) which don't send CORS headers.
- *
- * Not used for IPFS — public gateways below are content-addressed and
- * race themselves browser-side, so adding a worker hop in front of them
- * just doubled the failure surface and spammed the console with 502s
- * whenever any CID was unreachable.
- */
-export const IPFS_PROXY_BASE = "https://ipfs-cache.devskibb.workers.dev/ipfs/";
-
 // Public IPFS gateways. The browser races these in parallel for metadata
 // JSON and steps through them on <img> error for images. All three send
 // CORS headers and serve content-addressed data, so any working one is
-// equivalent — no need for a custom proxy in front.
-//
-// dweb.link was removed: it routes through the IPFS DHT for arbitrary
-// CIDs and consistently 504s on cold reads. Its losses dominated the
-// console noise without contributing successes the other gateways
-// couldn't.
+// equivalent. The Cloudflare worker proxy is no longer in the path —
+// indexer-side template substitution covers the cases that used to need
+// CORS-proxying for centralized hosts (scatter, lootgo, R2, etc.).
 export const IPFS_GATEWAYS = [
   "https://ipfs.io/ipfs/",
   "https://w3s.link/ipfs/",

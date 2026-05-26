@@ -72,10 +72,9 @@ export function NftImage({
     setAllFailed(true);
   }, [ipfsUri, gatewayIdx]);
 
-  // Cold path: route through the cached worker proxy (gatewayIdx 0).
-  // On <img>-error we step gatewayIdx forward and resolve to that
-  // gateway DIRECTLY — skipping rewriteIpfsUrl, which would rewrite us
-  // back to the worker and defeat the fallback.
+  // Cold path: use the URL as given (after ipfs:// → public gateway
+  // rewriting). On <img>-error step gatewayIdx forward and resolve to
+  // the next public gateway directly.
   let currentSrc: string;
   if (ipfsUri && gatewayIdx > 0) {
     currentSrc = resolveUri(ipfsUri, gatewayIdx);

@@ -1,42 +1,19 @@
-import { IPFS_GATEWAYS, IPFS_PROXY_BASE } from "@/config/constants";
+import { IPFS_GATEWAYS } from "@/config/constants";
 import type { NftMetadata } from "@/types/nft";
 
 /**
- * Generic CORS-bypassing proxy. The IPFS cache worker also exposes a
- * `/proxy?url=…` endpoint for whitelisted centralized hosts (S3, scatter.art,
- * Pancakeswap NFT API, etc.) that don't send CORS headers. Without this,
- * those collections' metadata can never be fetched from the browser.
- *
- * Hosts must be in the worker's PROXY_ALLOWED_HOST_PATTERNS list — see
- * `cloudflare-worker-ipfs/src/index.js`.
+ * Frontend metadata resolution is now indexer-first: collection-level
+ * sample images + per-token imageUrlTemplate substitution cover the
+ * vast majority of render paths without ever calling a metadata host
+ * from the browser. The few remaining direct fetches (token detail page,
+ * legacy fallbacks) go directly to the host — CORS-blocked hosts just
+ * fail to a placeholder, no worker-proxy detour. The Cloudflare worker
+ * is no longer in the path.
  */
-const CORS_HOSTS_NEEDING_PROXY = [
-  /^([a-z0-9-]+\.)?scatter\.art$/i,
-  /^([a-z0-9-]+\.)?pancakeswap\.com$/i,
-  /^([a-z0-9-]+\.)?lootgo\.app$/i,
-  /^([a-z0-9-]+\.)?codepunks\.fun$/i,
-  /^([a-z0-9-]+\.)?madness\.finance$/i,
-  /^([a-z0-9-]+\.)?wengoods\.io$/i,
-  /^s3[.-][a-z0-9-]+\.amazonaws\.com$/i,
-  /^[a-z0-9-]+\.s3\.[a-z0-9-]+\.amazonaws\.com$/i,
-  /^[a-z0-9-]+\.r2\.dev$/i,
-  /^gateway\.lighthouse\.storage$/i,
-];
-
-function shouldUseCorsProxy(url: string): boolean {
-  try {
-    const host = new URL(url).host;
-    return CORS_HOSTS_NEEDING_PROXY.some((re) => re.test(host));
-  } catch {
-    return false;
-  }
-}
 
 /**
- * Hosts whose DNS is gone, domains we know are permanently broken, or
- * APIs we've seen wedged for so long that retrying is pure noise. We
- * fast-fail before issuing any network request so the console isn't
- * spammed with ERR_NAME_NOT_RESOLVED for every card that references one.
+ * Hosts whose DNS is gone or known permanently broken — fast-fail
+ * before issuing any network request so the console isn't spammed.
  */
 const DEAD_HOSTS = [
   /^([a-z0-9-]+\.)?codepunks\.fun$/i,
@@ -49,13 +26,6 @@ function isDeadHost(url: string): boolean {
   } catch {
     return false;
   }
-}
-
-function wrapInCorsProxy(url: string): string {
-  if (!IPFS_PROXY_BASE) return url;
-  // Derive the proxy root (strip the trailing /ipfs/)
-  const root = IPFS_PROXY_BASE.replace(/\/ipfs\/?$/, "");
-  return `${root}/proxy?url=${encodeURIComponent(url)}`;
 }
 
 /**
@@ -182,23 +152,15 @@ async function fetchWithGatewayFallback(uri: string): Promise<string> {
   const ipfs = parseIpfsUri(uri);
 
   // Non-IPFS URI. Two paths:
-  //   - Known CORS-blocked host (scatter, lootgo, r2.dev, etc.) → straight
-  //     to the worker proxy. We do NOT try a direct fetch first; the
-  //     browser would log a CORS error before we could even catch it.
-  //   - Known-dead host (codepunks.fun, etc.) → throw immediately. No
-  //     point dialing a domain whose DNS doesn't resolve.
-  //   - Anything else → direct fetch. If the host happens to send CORS
-  //     it works; if it doesn't, the card shows a placeholder.
+  //   - Known-dead host (codepunks.fun, etc.) → throw immediately.
+  //   - Anything else → direct fetch. CORS-blocked hosts will fail
+  //     gracefully and the card shows a placeholder.
   if (!ipfs) {
     const resolved = resolveUri(uri);
     if (isDeadHost(resolved)) {
       throw new Error("Metadata host is dead");
     }
-    const target =
-      shouldUseCorsProxy(resolved) && IPFS_PROXY_BASE
-        ? wrapInCorsProxy(resolved)
-        : resolved;
-    const response = await fetch(target, {
+    const response = await fetch(resolved, {
       signal: AbortSignal.timeout(10_000),
     });
     if (!response.ok) {
