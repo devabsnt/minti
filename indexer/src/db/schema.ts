@@ -5,6 +5,7 @@ import {
   integer,
   bigint,
   jsonb,
+  real,
   timestamp,
   smallint,
   primaryKey,
@@ -46,6 +47,13 @@ export const collections = pgTable("collections", {
   mintCount: integer("mint_count").notNull().default(0),
   uniqueHolders: integer("unique_holders").notNull().default(0),
   uniqueSenders: integer("unique_senders").notNull().default(0),
+  // Holder-concentration metrics, fraction in [0, 1]. Computed from the
+  // tokens table per (contract, owner). Used to penalize the trending
+  // score for collections where supply is heavily concentrated in a
+  // small number of wallets (a strong gaming signal: airdroppers /
+  // farmers / single-wallet whales).
+  top1HolderPct: real("top1_holder_pct").notNull().default(0),
+  top10HolderPct: real("top10_holder_pct").notNull().default(0),
 
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),

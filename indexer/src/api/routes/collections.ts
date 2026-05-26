@@ -59,7 +59,7 @@ collectionsRoutes.get("/", async (c) => {
   }
   const where = and(...whereClauses)!;
 
-  // Composite trending score with multiplicative diversity floor.
+  // Composite trending score with two multiplicative gating factors.
   //
   // The previous additive formula let high-transfer / low-diversity
   // collections (airdrops with 1 sender, LP-like contracts) outrank
@@ -76,14 +76,26 @@ collectionsRoutes.get("/", async (c) => {
   //   diversity_factor = LEAST(1, unique_senders / 30)
   //     // 0..1, full at 30+ unique sellers
   //
+  //   concentration_factor = GREATEST(0.02, (1 - top10_pct) * (1 - 2*top1_pct))
+  //     // Strong anti-gaming: one wallet at 50%+ of supply effectively
+  //     // zeroes the score; top10 at 80%+ knocks it down to ~4%. Floor
+  //     // at 0.02 so a collection can still appear if everything else
+  //     // about it is extraordinary.
+  //
   //   mint_penalty = 5 if >85% mints, 2 if >65%
   //
-  //   score = activity * diversity_factor - mint_penalty
+  //   score = activity * diversity_factor * concentration_factor
+  //         - mint_penalty
   const trendingScoreSql = sql`(
     (LN(1 + GREATEST(0, ${collections.transferCount} - ${collections.mintCount})) * 2.0
       + LN(1 + ${collections.uniqueSenders}) * 2.5
       + LN(1 + ${collections.uniqueHolders}) * 1.0)
     * LEAST(1.0, ${collections.uniqueSenders}::float / 30.0)
+    * GREATEST(
+        0.02,
+        (1.0 - ${collections.top10HolderPct})
+        * GREATEST(0.0, 1.0 - 2.0 * ${collections.top1HolderPct})
+      )
     - CASE
         WHEN ${collections.transferCount} > 0
          AND ${collections.mintCount}::float / GREATEST(${collections.transferCount}, 1) > 0.85 THEN 5.0

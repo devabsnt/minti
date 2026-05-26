@@ -16,8 +16,14 @@ import { env } from "../env.js";
  *     pruning). Survives `activity` pruning.
  *   - unique_senders: distinct `from_addr` in `activity` per contract.
  *     Same retention semantics as transfer_count.
+ *   - top1_holder_pct / top10_holder_pct: share of supply held by the
+ *     #1 / top-10 wallets. Computed by grouping tokens by owner, ranking,
+ *     and dividing by the per-contract supply represented in `tokens`.
+ *     Used downstream as an anti-gaming penalty in the trending score —
+ *     collections where one wallet holds most of the supply get heavily
+ *     down-ranked regardless of transfer volume.
  *
- * Cost: single CTE + UPDATE. Postgres handles it well with the existing
+ * Cost: a few CTEs + UPDATE. Postgres handles it well with the existing
  * indexes on activity(contract, block_number) and tokens(contract).
  * For 30k collections + millions of activity rows, expect a few seconds.
  */
@@ -38,11 +44,27 @@ export async function refreshStats(): Promise<{ updated: number; elapsedMs: numb
       FROM activity
       GROUP BY contract
     ),
+    balances AS (
+      SELECT contract, owner, COUNT(*)::bigint AS balance
+      FROM tokens
+      WHERE owner IS NOT NULL AND owner <> '${ZERO}'
+      GROUP BY contract, owner
+    ),
+    ranked AS (
+      SELECT
+        contract,
+        balance,
+        ROW_NUMBER() OVER (PARTITION BY contract ORDER BY balance DESC) AS rnk
+      FROM balances
+    ),
     holder_stats AS (
       SELECT
         contract,
-        COUNT(DISTINCT owner) FILTER (WHERE owner IS NOT NULL AND owner <> '${ZERO}')::int AS unique_holders
-      FROM tokens
+        COUNT(*)::int AS unique_holders,
+        SUM(balance)::bigint AS total_held,
+        MAX(balance)::bigint AS top1_balance,
+        SUM(balance) FILTER (WHERE rnk <= 10)::bigint AS top10_balance
+      FROM ranked
       GROUP BY contract
     )
     UPDATE collections c
@@ -51,6 +73,14 @@ export async function refreshStats(): Promise<{ updated: number; elapsedMs: numb
       mint_count = COALESCE(a.mint_count, 0),
       unique_senders = COALESCE(a.unique_senders, 0),
       unique_holders = COALESCE(h.unique_holders, 0),
+      top1_holder_pct = CASE
+        WHEN h.total_held > 0 THEN (h.top1_balance::float / h.total_held)::real
+        ELSE 0
+      END,
+      top10_holder_pct = CASE
+        WHEN h.total_held > 0 THEN (h.top10_balance::float / h.total_held)::real
+        ELSE 0
+      END,
       updated_at = now()
     FROM activity_stats a
     FULL OUTER JOIN holder_stats h USING (contract)
