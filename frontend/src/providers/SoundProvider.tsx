@@ -114,62 +114,13 @@ export function SoundProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
+  // Paper-hover sound deliberately removed. The hook stays callable
+  // (as a no-op) so every card's `onPointerEnter={playPaperHover}`
+  // wiring continues to work without changes; if we ever want a
+  // hover sound back, we drop the implementation in here in one
+  // place and every card lights up.
   const playPaperHover = useCallback(() => {
-    if (typeof window === "undefined") return;
-    // Per-call throttle. Even at 60fps mouse moves, we won't fire more
-    // than once per 180ms - keeps cursor sweeps from buzzing.
-    const now = performance.now();
-    if (now - lastHoverAtRef.current < 180) return;
-    lastHoverAtRef.current = now;
-
-    try {
-      // Lazy-init the AudioContext on the first hover. The autoplay
-      // policy needs a user gesture upstream - hover counts in modern
-      // Chromium and Safari.
-      if (!audioCtxRef.current) {
-        const Ctor =
-          window.AudioContext ||
-          (window as unknown as { webkitAudioContext: typeof AudioContext })
-            .webkitAudioContext;
-        if (!Ctor) return;
-        audioCtxRef.current = new Ctor();
-      }
-      const ctx = audioCtxRef.current;
-      if (ctx.state === "suspended") void ctx.resume().catch(() => {});
-
-      // Synth a 90-110ms whisper of filtered noise. Bandpass tuned to
-      // 2-5kHz so it reads as "paper" not "static". Volume kept very
-      // low (peak gain ~0.05) so it never overpowers content.
-      const duration = 0.08 + Math.random() * 0.04;
-      const sampleRate = ctx.sampleRate;
-      const buffer = ctx.createBuffer(1, sampleRate * duration, sampleRate);
-      const data = buffer.getChannelData(0);
-      for (let i = 0; i < data.length; i++) {
-        data[i] = (Math.random() * 2 - 1) * 0.7;
-      }
-
-      const source = ctx.createBufferSource();
-      source.buffer = buffer;
-
-      const bandpass = ctx.createBiquadFilter();
-      bandpass.type = "bandpass";
-      bandpass.frequency.value = 2800 + Math.random() * 1500;
-      bandpass.Q.value = 1.2;
-
-      const gain = ctx.createGain();
-      // Soft attack + decay envelope so it doesn't click.
-      const t0 = ctx.currentTime;
-      gain.gain.setValueAtTime(0, t0);
-      gain.gain.linearRampToValueAtTime(0.05, t0 + 0.008);
-      gain.gain.linearRampToValueAtTime(0.0, t0 + duration);
-
-      source.connect(bandpass).connect(gain).connect(ctx.destination);
-      source.start();
-      source.stop(t0 + duration + 0.02);
-    } catch {
-      // Audio APIs sometimes throw in private mode / restrictive
-      // contexts. Silently skip.
-    }
+    // intentionally empty
   }, []);
 
   const value = useMemo<SoundContextValue>(

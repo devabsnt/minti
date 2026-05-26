@@ -709,12 +709,26 @@ function TrendingPodiumCard({
                 priority={rank === 1}
               />
             </div>
-            <div className="flex items-baseline gap-1.5 font-serif">
-              <span className="text-xs text-foreground-secondary">Nº</span>
+            <div className="flex items-center gap-1.5">
+              {/* Vermillion stamp box with the gradient rank inside.
+                  Gold-on-red is the classic postal "first class" look,
+                  and the metallic gradient pops harder against the red
+                  ground than it did against cream. */}
               <span
-                className={`text-2xl font-bold bg-gradient-to-r ${tier.gradient} bg-clip-text text-transparent`}
+                className="inline-flex items-baseline gap-1 px-2.5 py-1 font-serif"
+                style={{
+                  background: "var(--color-mint)",
+                  boxShadow:
+                    "inset 0 0 0 1px rgba(255, 245, 214, 0.5), 0 1px 2px rgba(45, 36, 24, 0.18), 0 2px 4px rgba(45, 36, 24, 0.12)",
+                  transform: "rotate(-1deg)",
+                }}
               >
-                {rank.toString().padStart(2, "0")}
+                <span className="text-[10px] text-[#fff5d6]/85">Nº</span>
+                <span
+                  className={`text-lg font-bold bg-gradient-to-r ${tier.gradient} bg-clip-text text-transparent`}
+                >
+                  {rank.toString().padStart(2, "0")}
+                </span>
               </span>
               <TrendArrow trend={trend} />
             </div>
@@ -926,12 +940,20 @@ function TrendingHeroCard({
       onPointerEnter={playPaperHover}
       className="stamp-shadow group relative flex gap-4 items-center p-4 border border-border bg-background-secondary hover:border-border-hover transition-colors"
     >
-      <div className="flex flex-col items-center w-11 flex-shrink-0">
-        <span className="font-serif text-[10px] text-foreground-secondary leading-none">
-          Nº
-        </span>
-        <span className="font-serif text-base font-bold text-foreground leading-tight">
-          {rank.toString().padStart(2, "0")}
+      <div className="flex flex-col items-center gap-1 w-12 flex-shrink-0">
+        <span
+          className="inline-flex items-baseline gap-1 px-2 py-0.5 font-serif"
+          style={{
+            background: "var(--color-mint)",
+            boxShadow:
+              "inset 0 0 0 1px rgba(255, 245, 214, 0.5), 0 1px 2px rgba(45, 36, 24, 0.18)",
+            transform: "rotate(-1.5deg)",
+          }}
+        >
+          <span className="text-[9px] text-[#fff5d6]/85 leading-none">Nº</span>
+          <span className="text-sm font-bold text-[#fff5d6] leading-none">
+            {rank.toString().padStart(2, "0")}
+          </span>
         </span>
         <TrendArrow trend={trend} />
       </div>
