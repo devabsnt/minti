@@ -89,10 +89,12 @@ const URI_BATCH_SIZE = 200;
 // pool distributes across its underlying endpoints, so this is
 // effectively "how many endpoints we're hitting in parallel."
 const URI_BATCH_PARALLELISM = 5;
-// Parallel JSON fetches. Higher = faster on healthy hosts but more
-// browser pressure + more in-flight CORS requests for blocked hosts
-// (each one logs a console error).
-const JSON_CONCURRENCY = 60;
+// Parallel JSON fetches. Tuned down from a more aggressive value
+// because some metadata hosts (notably evmfs.xyz, which reads
+// on-chain log data per request) rate-limit at 429 when we hit them
+// too hard. The fetch helper now retries 429 with backoff, so we
+// stay polite even at this concurrency.
+const JSON_CONCURRENCY = 30;
 // Number of cached tokenURIs to re-fetch on revisit to detect a
 // reveal / baseURI swap.
 const SAMPLE_SIZE = 3;

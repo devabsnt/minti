@@ -134,12 +134,20 @@ export function toCanonicalIpfsUri(uri: string): string | undefined {
 }
 
 /**
- * Fetch the URL with a couple of retries on transient failures. The
- * browser reports a lot of failure modes as `TypeError: Failed to fetch`
- * or "CORS error" when the actual cause is a TCP reset, an upstream
- * timeout, or a preflight that never completed — i.e. retryable.
- * Retries with small backoff. We only retry on TypeError (the network
- * failure / opaque-failure case) or 5xx; 4xx is treated as terminal.
+ * Fetch the URL with retries on transient failures.
+ *
+ * Retryable:
+ *   - TypeError (network failure, preflight timeout, CORS-opaque)
+ *   - 429 Too Many Requests (with longer backoff and Retry-After
+ *     honored when present)
+ *   - 5xx
+ *
+ * Terminal: any other 4xx (404, etc).
+ *
+ * The 429 path uses a separate backoff schedule because rate limits
+ * usually want seconds, not the sub-second short backoff that suits
+ * network blips. We also clamp the Retry-After value so a hostile
+ * gateway can't stall us forever.
  */
 async function fetchTextWithRetry(
   url: string,
@@ -148,6 +156,7 @@ async function fetchTextWithRetry(
 ): Promise<string> {
   let lastErr: Error | null = null;
   for (let i = 0; i < attempts; i++) {
+    let delayBeforeNext = 200 * Math.pow(3, i); // 200ms, 600ms default
     try {
       const response = await fetch(url, {
         signal: AbortSignal.timeout(timeoutMs),
@@ -155,21 +164,45 @@ async function fetchTextWithRetry(
         referrerPolicy: "no-referrer",
       });
       if (response.ok) return await response.text();
-      // Server responded — only retry on 5xx; 4xx (404 etc) is final.
-      if (response.status >= 400 && response.status < 500) {
+      if (response.status === 429) {
+        // Rate-limited: retryable with longer backoff. Respect
+        // Retry-After header when present (seconds or HTTP-date).
+        // Clamp to 10s so a hostile/buggy gateway can't park us.
+        const retryAfter = parseRetryAfter(
+          response.headers.get("retry-after"),
+        );
+        delayBeforeNext = Math.min(10_000, retryAfter ?? 1500 * (i + 1));
+        lastErr = new Error("rate limited (429)");
+      } else if (response.status >= 400 && response.status < 500) {
+        // Other 4xx (404 etc) is terminal.
         throw new Error(`Failed to fetch metadata: ${response.status}`);
+      } else {
+        // 5xx - retryable, default short backoff.
+        lastErr = new Error(`Failed to fetch metadata: ${response.status}`);
       }
-      lastErr = new Error(`Failed to fetch metadata: ${response.status}`);
     } catch (err) {
       lastErr = err instanceof Error ? err : new Error(String(err));
-      // Abort/timeout/typeerror — all retryable.
+      // Abort/timeout/typeerror - all retryable, short backoff.
     }
     if (i < attempts - 1) {
-      // Backoff: 200ms, 600ms.
-      await new Promise((r) => setTimeout(r, 200 * Math.pow(3, i)));
+      await new Promise((r) => setTimeout(r, delayBeforeNext));
     }
   }
   throw lastErr ?? new Error("Failed to fetch metadata");
+}
+
+/** Parse the `Retry-After` header (seconds OR HTTP-date). */
+function parseRetryAfter(header: string | null): number | null {
+  if (!header) return null;
+  const seconds = Number(header);
+  if (Number.isFinite(seconds) && seconds >= 0) {
+    return seconds * 1000;
+  }
+  const dateMs = Date.parse(header);
+  if (!Number.isNaN(dateMs)) {
+    return Math.max(0, dateMs - Date.now());
+  }
+  return null;
 }
 
 async function fetchWithGatewayFallback(uri: string): Promise<string> {
