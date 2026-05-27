@@ -32,6 +32,12 @@ import {
 const CHUNK_SIZE = 10_000;
 const WAVE_SIZE = 5; // matches the size of the Monad public RPC pool
 const RETRY_BACKOFF_MS = 5_000;
+// A wave is one Promise.all over WAVE_SIZE chunks. If a single RPC
+// hangs (TCP accepted but no response), the whole wave hangs forever
+// because Promise.all waits for ALL chunks. 90s is generous for a real
+// wave (~5 chunks × ~10s normal) but short enough that a stuck wave
+// fails fast and the retry loop picks a different RPC ordering.
+const WAVE_TIMEOUT_MS = 90_000;
 const MONAD_AVG_BLOCK_MS = 500;
 const BLOCKS_PER_DAY = (24 * 60 * 60 * 1000) / MONAD_AVG_BLOCK_MS;
 // Estimated genesis timestamp. Used only for early-block activity rows
@@ -128,10 +134,19 @@ export async function runBootstrap(
     let allLogs: ChainLog[];
     try {
       // RPC fetches run concurrently across the pool — this is the slow,
-      // I/O-bound part that benefits from parallelism.
-      const fetched = await Promise.all(
-        chunks.map((c) => fetchChunk(source, c.from, c.to)),
-      );
+      // I/O-bound part that benefits from parallelism. Wrapped in a
+      // wave-level timeout because a single stuck RPC (TCP accepted but
+      // no body) would otherwise park `Promise.all` forever and never
+      // surface anywhere.
+      const fetched = await Promise.race([
+        Promise.all(chunks.map((c) => fetchChunk(source, c.from, c.to))),
+        new Promise<never>((_, reject) =>
+          setTimeout(
+            () => reject(new Error(`wave timeout after ${WAVE_TIMEOUT_MS}ms`)),
+            WAVE_TIMEOUT_MS,
+          ),
+        ),
+      ]);
       allLogs = [];
       for (const arr of fetched) {
         for (let i = 0; i < arr.length; i++) allLogs.push(arr[i]!);
