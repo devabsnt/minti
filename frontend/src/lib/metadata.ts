@@ -1,26 +1,27 @@
 import { IPFS_GATEWAYS } from "@/config/constants";
 import type { NftMetadata } from "@/types/nft";
-import {
-  canProxyUrl,
-  markProxyPreferred,
-  proxyUrlFor,
-  shouldUseProxy,
-  unmarkProxyPreferred,
-} from "@/lib/proxyRouter";
+import { canProxyUrl, proxyUrlFor } from "@/lib/proxyRouter";
 
 /**
  * Frontend metadata resolution is indexer-first (collection-level sample
- * images + per-token imageUrlTemplate substitution cover the vast majority
- * of render paths without ever calling a metadata host from the browser).
+ * images + per-token imageUrlTemplate substitution cover the vast
+ * majority of render paths without ever calling a metadata host from
+ * the browser).
  *
- * For the remaining direct fetches (token detail page, trait enumeration,
- * legacy fallbacks): IPFS-shaped URIs race public gateways, and HTTP
- * URIs go directly to the host. A direct fetch that fails with a
- * TypeError (the browser's CORS-block signature) is retried through the
- * same-origin `/api/proxy` Vercel Route Handler and the host gets
- * remembered as "proxy-preferred" for 24h so future fetches skip the
- * wasted direct attempt. No host allowlist on the frontend — the route
- * handler enforces its own server-side safety gates.
+ * For the remaining browser-side fetches (token detail page, trait
+ * enumeration, legacy fallbacks):
+ *
+ *   - IPFS / Arweave URIs go DIRECT to public gateways. Those serve
+ *     CORS, so direct fetch works, and racing multiple gateways gives
+ *     redundancy when one is slow.
+ *   - All other HTTPS metadata URLs go through the same-origin
+ *     `/api/proxy` Vercel Route Handler. We don't try direct first
+ *     because the browser logs a CORS error on the unavoidable failure
+ *     even when our code successfully falls back — and we can't tell
+ *     ahead of time which hosts serve CORS. Always-proxy means zero
+ *     console noise, and the route handler's Vercel-edge cache (7d for
+ *     200, 60s for 5xx) makes the extra hop effectively free after the
+ *     first call.
  */
 
 /**
@@ -167,11 +168,26 @@ async function fetchTextWithRetry(
   timeoutMs = 10_000,
 ): Promise<string> {
   let lastErr: Error | null = null;
-  // Pick the initial URL: route through the worker proxy if the host is
-  // on the allowlist OR previously CORS-failed. On a TypeError below we
-  // retry once through the proxy and remember the host for next time.
-  let effectiveUrl = shouldUseProxy(url) ? proxyUrlFor(url) : url;
-  let proxiedAlready = effectiveUrl !== url;
+  // **Always proxy** non-content-addressed HTTPS URLs through our
+  // same-origin `/api/proxy` Route Handler. Two reasons:
+  //
+  //   1. We can't know which hosts serve CORS without trying — and
+  //      every direct attempt that fails CORS produces an unsilenceable
+  //      browser console error, even if we successfully fall back. With
+  //      30 concurrent fetches per enumeration wave, that's 30 noisy
+  //      console errors per fresh collection visit.
+  //   2. The proxy is cheap: same-origin (no CORS check on the
+  //      response), Vercel edge cached for 7 days on success, 60s on
+  //      5xx. Routing through it costs essentially nothing after the
+  //      first call for a given URL.
+  //
+  // IPFS / Arweave gateways are NOT proxied — they already serve CORS,
+  // and going direct lets us race multiple gateways for redundancy.
+  // `fetchWithGatewayFallback` calls this function only with the
+  // already-resolved gateway URL OR the non-content-addressed URL, so
+  // we can route based purely on what the caller hands us.
+  const useProxy = canProxyUrl(url) && !looksLikeContentAddressedGateway(url);
+  const effectiveUrl = useProxy ? proxyUrlFor(url) : url;
   for (let i = 0; i < attempts; i++) {
     let delayBeforeNext = 200 * Math.pow(3, i); // 200ms, 600ms default
     try {
@@ -197,14 +213,10 @@ async function fetchTextWithRetry(
       } else if (response.status >= 400 && response.status < 500) {
         // Other 4xx (404 etc) is terminal.
         throw new Error(`Failed to fetch metadata: ${response.status}`);
-      } else if (proxiedAlready) {
-        // 5xx through the proxy: the Cloudflare worker negative-caches
-        // upstream 5xx for 60s, so retrying gets the same 502 back
-        // unchanged. Treat as terminal to stop the console-spam storm,
-        // and unmark the host from "proxy-preferred" — the proxy isn't
-        // helping, future requests should try direct again rather than
-        // loop on the broken proxy path.
-        unmarkProxyPreferred(url);
+      } else if (useProxy) {
+        // 5xx through the proxy: the route handler neg-caches upstream
+        // 5xx for 60s, so retrying gets the same response unchanged.
+        // Treat as terminal.
         throw new Error(`Failed to fetch metadata: ${response.status}`);
       } else {
         // 5xx on a direct fetch — retryable, default short backoff.
@@ -212,28 +224,28 @@ async function fetchTextWithRetry(
       }
     } catch (err) {
       lastErr = err instanceof Error ? err : new Error(String(err));
-      // Abort/timeout/typeerror - all retryable, short backoff.
-      // TypeError on a direct fetch is the browser's CORS-block tell.
-      // If the host is on the worker allowlist, swap to the proxy URL
-      // for the remaining attempts AND remember this host so future
-      // calls skip the wasted direct attempt.
-      if (
-        !proxiedAlready &&
-        lastErr instanceof TypeError &&
-        canProxyUrl(url)
-      ) {
-        markProxyPreferred(url);
-        effectiveUrl = proxyUrlFor(url);
-        proxiedAlready = true;
-        // Don't wait the full backoff — proxy is a different host
-        delayBeforeNext = 0;
-      }
+      // Abort/timeout/typeerror — all retryable, short backoff.
     }
     if (i < attempts - 1) {
       await new Promise((r) => setTimeout(r, delayBeforeNext));
     }
   }
   throw lastErr ?? new Error("Failed to fetch metadata");
+}
+
+/**
+ * Heuristic: is this URL pointed at a public IPFS / Arweave gateway?
+ * Those already serve CORS, so we go direct and let `fetchWithGatewayFallback`
+ * race multiple gateways for redundancy. Everything else gets proxied.
+ */
+function looksLikeContentAddressedGateway(url: string): boolean {
+  if (!url) return false;
+  // Cheap check that avoids `new URL(...)` for the hot path.
+  return (
+    url.includes("/ipfs/") ||
+    url.includes(".ipfs.") ||
+    url.startsWith("https://arweave.net/")
+  );
 }
 
 /** Parse the `Retry-After` header (seconds OR HTTP-date). */
