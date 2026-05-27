@@ -97,16 +97,22 @@ export async function startCrawler() {
     console.error(`[retemplate] failed: ${err instanceof Error ? err.message : err}`);
   }
 
+  // Initial stats + tier passes — bounded by a hard timeout so a stuck
+  // query (Postgres lock, network hang) doesn't park the entire crawler
+  // before periodic tasks start. If we time out here, the periodic
+  // stats / tier loops below will run it on their normal cadence; the
+  // first request after deploy might serve slightly-stale tier data,
+  // but that's far better than the trait/enrich workers never starting.
   try {
     console.log("[crawler] initial stats refresh...");
-    const s = await refreshStats();
+    const s = await withTimeout(refreshStats(), 120_000, "initial stats");
     console.log(`[crawler] initial stats: ${s.updated} collections updated in ${s.elapsedMs}ms`);
   } catch (err) {
-    console.error(`[crawler] initial stats failed: ${err instanceof Error ? err.message : err}`);
+    console.error(`[crawler] initial stats failed: ${err instanceof Error ? err.message : err} — moving on`);
   }
   try {
     console.log("[crawler] initial tier classification...");
-    const t = await refreshTiers();
+    const t = await withTimeout(refreshTiers(), 60_000, "initial tier");
     console.log(`[crawler] initial tier: T0=${t.tier0} T1=${t.tier1} T2=${t.tier2} (${t.updated} changed) in ${t.elapsedMs}ms`);
   } catch (err) {
     console.error(`[crawler] initial tier failed: ${err instanceof Error ? err.message : err}`);
@@ -131,4 +137,35 @@ export async function startCrawler() {
       console.error(`[${task.name}] top-level failure:`, err);
     });
   }
+}
+
+/**
+ * Race `promise` against a timeout. Throws `Timed out` if the promise
+ * doesn't settle in `ms` milliseconds. Caller decides whether to recover
+ * (e.g. log and skip) or rethrow.
+ *
+ * Used to bound the blocking initial passes (stats, tier) so a stuck
+ * Postgres query can't keep the periodic crawler tasks from ever
+ * starting. The periodic loops will recover the missed work on their
+ * normal cadence.
+ *
+ * NOTE: this is best-effort cancellation — the underlying Postgres
+ * query keeps running on the server until it finishes or the
+ * connection drops. The timeout just lets us stop awaiting it.
+ */
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(new Error(`${label} timed out after ${ms}ms`));
+    }, ms);
+    promise
+      .then((v) => {
+        clearTimeout(timer);
+        resolve(v);
+      })
+      .catch((err) => {
+        clearTimeout(timer);
+        reject(err);
+      });
+  });
 }
