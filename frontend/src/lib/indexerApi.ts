@@ -130,3 +130,25 @@ export interface ApiSparklineBucket {
 export interface ApiSparklineResponse {
   buckets: ApiSparklineBucket[];
 }
+
+/**
+ * Dictionary-encoded trait manifest. Mirrors the shape produced by the
+ * indexer's `crawler/traits/worker.ts`. `traits[i].t[j]` is an integer
+ * index into `traitValues[j]` (or -1 when that token doesn't have a
+ * value for trait j). See `decodeIndexerManifest` for the inflate step.
+ */
+export interface ApiTraitsManifest {
+  traitTypes: string[];
+  traitValues: string[][];
+  traits: Array<{ id: string; t: number[] }>;
+}
+
+export interface ApiTraitsResponse {
+  contract: string;
+  status: "pending" | "partial" | "complete" | "failed" | "all_identical";
+  totalSupply: string | null;
+  tokenCount: number;
+  manifest: ApiTraitsManifest | null;
+  enumeratedAt: string | null;
+  updatedAt: string;
+}

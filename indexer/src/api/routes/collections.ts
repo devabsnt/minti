@@ -2,7 +2,7 @@ import { Hono } from "hono";
 import { and, asc, desc, eq, gte, ilike, isNotNull, or, sql } from "drizzle-orm";
 import { z } from "zod";
 import { db, rawSql } from "../../db/client.js";
-import { activity, collections, tokens } from "../../db/schema.js";
+import { activity, collections, collectionTraits, tokens } from "../../db/schema.js";
 
 /**
  * Collection-facing endpoints.
@@ -209,6 +209,72 @@ collectionsRoutes.get("/:address/activity", async (c) => {
     .limit(limit);
 
   return c.json({ activity: rows });
+});
+
+/**
+ * Pre-aggregated trait manifest for a collection. Built by the
+ * `traits` worker (indexer/src/crawler/traits/worker.ts) and served
+ * here verbatim. Frontend short-circuits client-side enumeration when
+ * `status` is `complete` (or `all_identical` — equivalent of "no
+ * traits to filter on").
+ *
+ * Returns 404 when the worker hasn't enumerated this collection yet
+ * — frontend falls back to client-side enumeration in that case.
+ *
+ * Response shape:
+ *   {
+ *     contract: "0x...",
+ *     status: "pending"|"partial"|"complete"|"failed"|"all_identical",
+ *     totalSupply: "3333",
+ *     tokenCount: 3333,
+ *     manifest: {
+ *       traitTypes: string[],
+ *       traitValues: string[][],
+ *       traits: Array<{ id: string, t: number[] }>
+ *     } | null,
+ *     enumeratedAt: ISO8601 | null,
+ *     updatedAt: ISO8601
+ *   }
+ */
+collectionsRoutes.get("/:address/traits", async (c) => {
+  const address = c.req.param("address").toLowerCase();
+  if (!/^0x[0-9a-f]{40}$/.test(address)) {
+    return c.json({ error: "Invalid address" }, 400);
+  }
+
+  const rows = await db
+    .select({
+      contract: collectionTraits.contract,
+      status: collectionTraits.status,
+      totalSupply: collectionTraits.totalSupply,
+      tokenCount: collectionTraits.tokenCount,
+      manifest: collectionTraits.manifest,
+      enumeratedAt: collectionTraits.enumeratedAt,
+      updatedAt: collectionTraits.updatedAt,
+    })
+    .from(collectionTraits)
+    .where(eq(collectionTraits.contract, address))
+    .limit(1);
+
+  const row = rows[0];
+  if (!row) return c.json({ error: "Not found" }, 404);
+
+  // Cache aggressively when complete — manifests are immutable until
+  // a reveal triggers re-enumeration. Partial responses get a short
+  // cache so polling doesn't hammer the DB but a freshly-completed
+  // collection is picked up quickly.
+  const ttl = row.status === "complete" || row.status === "all_identical" ? 3600 : 30;
+  c.header("Cache-Control", `public, max-age=${ttl}, s-maxage=${ttl}`);
+
+  return c.json({
+    contract: row.contract,
+    status: row.status,
+    totalSupply: row.totalSupply,
+    tokenCount: row.tokenCount,
+    manifest: row.manifest,
+    enumeratedAt: row.enumeratedAt,
+    updatedAt: row.updatedAt,
+  });
 });
 
 const sparklineSchema = z.object({

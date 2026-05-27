@@ -41,6 +41,13 @@ const schema = z.object({
     .string()
     .default("0")
     .transform((s) => s === "1" || s.toLowerCase() === "true"),
+  // Gates the trait-index worker. Off by default so deploying this code
+  // doesn't auto-start a heavy background backfill — flip explicitly
+  // when ready. Worker is implemented in crawler/traits/worker.ts.
+  RUN_TRAIT_INDEX: z
+    .string()
+    .default("0")
+    .transform((s) => s === "1" || s.toLowerCase() === "true"),
   // How many days of chain history the indexer maintains in the activity
   // table. Transfers older than this get pruned daily. Mints, burns, and
   // marketplace events (future) are kept regardless. Default 60.

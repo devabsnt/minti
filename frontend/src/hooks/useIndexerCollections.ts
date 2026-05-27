@@ -9,6 +9,7 @@ import {
   type ApiActivityResponse,
   type ApiTokensResponse,
   type ApiSparklineResponse,
+  type ApiTraitsResponse,
 } from "@/lib/indexerApi";
 
 /**
@@ -83,6 +84,49 @@ export function useIndexerCollectionTokens(
         page,
         pageSize,
       }),
+  });
+}
+
+/**
+ * Pre-aggregated trait manifest for a collection. Served by the
+ * indexer's `/api/collections/:address/traits` route, populated by the
+ * `traits` background worker.
+ *
+ * Three terminal states matter to the UI:
+ *   - `complete` / `all_identical`: manifest is the source of truth,
+ *     skip all client-side enumeration. Cached aggressively (5min
+ *     stale, 1h gc) — these are effectively immutable until a reveal.
+ *   - `partial`: worker is mid-enumeration, manifest holds what's
+ *     been pulled so far. Useful as a head start but client-side
+ *     enumeration may still want to run to fill the gap (or just
+ *     trust the indexer to finish soon).
+ *   - 404: worker hasn't gotten to this collection yet; frontend
+ *     falls back to client-side enumeration.
+ */
+export function useIndexerCollectionTraits(address: string | undefined) {
+  return useQuery({
+    queryKey: ["indexer-collection-traits", address?.toLowerCase()],
+    enabled: !!address && /^0x[0-9a-fA-F]{40}$/.test(address),
+    staleTime: 5 * 60 * 1000,
+    gcTime: 60 * 60 * 1000,
+    // 404 is a normal state ("not yet built") not an error — don't
+    // retry it. Other failures get one retry.
+    retry: (failureCount, err) => {
+      if (err instanceof Error && /\b404\b/.test(err.message)) return false;
+      return failureCount < 1;
+    },
+    queryFn: async () => {
+      try {
+        return await indexerFetch<ApiTraitsResponse>(
+          `api/collections/${address!.toLowerCase()}/traits`,
+        );
+      } catch (err) {
+        // Normalize 404 to a null result so callers can render the
+        // fallback path without try/catching.
+        if (err instanceof Error && /\b404\b/.test(err.message)) return null;
+        throw err;
+      }
+    },
   });
 }
 

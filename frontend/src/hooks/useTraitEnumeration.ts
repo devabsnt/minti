@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { Abi } from "viem";
 import { useBrowseChain } from "@/providers/ChainProvider";
 import { useRpc } from "@/providers/RpcProvider";
@@ -11,7 +11,11 @@ import {
   decodeResult,
   type MulticallRequest,
 } from "@/lib/rpcPool";
-import { useIndexerCollection } from "@/hooks/useIndexerCollections";
+import {
+  useIndexerCollection,
+  useIndexerCollectionTraits,
+} from "@/hooks/useIndexerCollections";
+import type { ApiTraitsManifest } from "@/lib/indexerApi";
 import {
   aggregateTokenIds,
   getAggregateForCollection,
@@ -95,13 +99,31 @@ export function useTraitEnumeration(
   const { browseChainId } = useBrowseChain();
   const { getEffectiveRpc } = useRpc();
   const indexerCollection = useIndexerCollection(contract);
+  const indexerTraits = useIndexerCollectionTraits(contract);
   const [state, setState] = useState<EnumerationState>(INITIAL_STATE);
   const cancelRef = useRef(false);
   const runIdRef = useRef(0);
 
+  // Short-circuit on the indexer manifest. When the indexer has a
+  // `complete` / `all_identical` manifest, we use it verbatim and skip
+  // ALL client-side fetching. A `partial` manifest is still useful as
+  // a head start, but we let client-side enumeration fill the gap.
+  const indexerState = useMemo(() => {
+    const d = indexerTraits.data;
+    if (!d || !d.manifest) return null;
+    if (d.status !== "complete" && d.status !== "all_identical") return null;
+    return decodeIndexerManifest(d.manifest, d.status, d.totalSupply);
+  }, [indexerTraits.data]);
+
   useEffect(() => {
     if (!enabled) return;
     if (!contract || !totalSupply || totalSupply <= 0) return;
+    // If the indexer manifest is terminal, publish it and skip the
+    // client-side enumeration entirely.
+    if (indexerState) {
+      setState(indexerState);
+      return;
+    }
     const myRunId = ++runIdRef.current;
     cancelRef.current = false;
     const contractLower = contract.toLowerCase();
@@ -266,9 +288,81 @@ export function useTraitEnumeration(
     browseChainId,
     enabled,
     indexerCollection.data?.collection?.tokenUriTemplate,
+    indexerState,
   ]);
 
   return state;
+}
+
+/**
+ * Inflate the indexer's dictionary-encoded manifest into the same
+ * `EnumerationState` shape `useTraitEnumeration` produces from
+ * client-side enumeration. Walks each token, dereferences value
+ * indices through `traitValues`, builds `traitCounts` and rarity
+ * scores on the way.
+ *
+ * Terminal-only (`complete` / `all_identical`) — caller is responsible
+ * for not passing in partial manifests it can't reconcile with the
+ * client-side aggregate.
+ */
+function decodeIndexerManifest(
+  manifest: ApiTraitsManifest,
+  status: "complete" | "all_identical",
+  totalSupplyStr: string | null,
+): EnumerationState {
+  const traitTypes = manifest.traitTypes ?? [];
+  const traitValues = manifest.traitValues ?? [];
+  const traits = manifest.traits ?? [];
+  const totalSupply = totalSupplyStr ? Number(totalSupplyStr) : traits.length;
+
+  const traitCounts: Record<string, Record<string, number>> = {};
+  const tokenAttributes: Record<string, TokenAttribute[]> = {};
+  for (const tt of traitTypes) traitCounts[tt] = {};
+
+  for (const entry of traits) {
+    const attrs: TokenAttribute[] = [];
+    const indices = entry.t ?? [];
+    for (let i = 0; i < indices.length; i++) {
+      const vIdx = indices[i];
+      if (vIdx == null || vIdx < 0) continue;
+      const traitType = traitTypes[i];
+      const value = traitValues[i]?.[vIdx];
+      if (!traitType || value == null) continue;
+      attrs.push({ trait_type: traitType, value });
+      traitCounts[traitType][value] =
+        (traitCounts[traitType][value] ?? 0) + 1;
+    }
+    tokenAttributes[entry.id] = attrs;
+  }
+
+  // Rarity: same formula as client-side computeRarity — score is sum of
+  // supply / count for each (trait, value) pair on the token.
+  const enumeratedCount = Object.keys(tokenAttributes).length || 1;
+  const rarityScores: Record<string, number> = {};
+  for (const [id, attrs] of Object.entries(tokenAttributes)) {
+    let score = 0;
+    for (const a of attrs) {
+      const count = traitCounts[a.trait_type]?.[a.value] ?? 1;
+      score += enumeratedCount / count;
+    }
+    rarityScores[id] = score;
+  }
+  const sorted = Object.entries(rarityScores).sort((a, b) => b[1] - a[1]);
+  const rarityRanks: Record<string, number> = {};
+  sorted.forEach(([id], idx) => {
+    rarityRanks[id] = idx + 1;
+  });
+
+  return {
+    status,
+    progress: 1,
+    enumeratedCount: Object.keys(tokenAttributes).length,
+    totalSupply,
+    traitCounts,
+    tokenAttributes,
+    rarityScores,
+    rarityRanks,
+  };
 }
 
 // ── Helpers ─────────────────────────────────────────────────────

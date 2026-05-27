@@ -116,3 +116,63 @@ export const crawlerState = pgTable("crawler_state", {
   lastBlockProcessed: integer("last_block_processed").notNull(),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
 });
+
+// ── collection_traits ──────────────────────────────────────────────
+// Dictionary-encoded trait manifest per collection. Built once by the
+// trait worker, served by `/api/collections/:address/traits`, and
+// consumed by the frontend filter UI without any client-side
+// enumeration. Format is intentionally the same shape as the EVMFS
+// `IndexManifest` the frontend already decodes, with one extra layer:
+// each token's attribute values are stored as integer indices into a
+// per-trait-type value dictionary, so the on-disk footprint is tiny
+// (~5-15 KB per collection after Postgres TOAST compression).
+//
+// Resume: the worker checkpoints `lastEnumeratedTokenId` after each
+// chunk so a Railway restart picks up where it left off instead of
+// re-fetching a 10K-token collection from scratch.
+export const collectionTraits = pgTable("collection_traits", {
+  // Lowercased contract address. FK-like to collections.address but we
+  // don't enforce a constraint — collections can be pruned without us
+  // needing to immediately clean this up.
+  contract: text("contract").primaryKey(),
+  // Lifecycle:
+  //   pending   — queued, not yet started
+  //   partial   — checkpointed mid-enumeration (resumable)
+  //   complete  — every token enumerated, manifest serves real data
+  //   failed    — too many host failures; will retry on next backoff
+  //   all_identical — every token has the same attribute set, filter
+  //                   UI doesn't render. Still "done" — won't re-run.
+  status: text("status").notNull().default("pending"),
+  // totalSupply at enumeration time. If the chain's current supply
+  // exceeds this, the worker re-enumerates the new tokens.
+  totalSupply: text("total_supply"),
+  // How many tokens we've actually pulled attributes for (independent
+  // of totalSupply when status='partial' or when some tokens 404'd).
+  tokenCount: integer("token_count").notNull().default(0),
+  // The manifest. Shape:
+  //   {
+  //     traitTypes: string[],
+  //     traitValues: string[][],      // [traitIdx][valueIdx] -> value
+  //     traits: Array<{ id: string, t: number[] }>  // tokenId -> value indices
+  //   }
+  // -1 in `t[i]` means "this token doesn't have trait i". Stored as
+  // jsonb; Postgres TOAST-compresses the repeating-integer payload.
+  manifest: jsonb("manifest"),
+  // Sampled (tokenId, tokenURI) pairs for reveal detection. On every
+  // refresh, we re-call tokenURI() for these IDs and compare; mismatch
+  // means the collection was re-revealed and we re-enumerate.
+  sampledTokenURIs: jsonb("sampled_token_uris"),
+  // Resume checkpoint. Stored as text to match tokens.tokenId's type
+  // (collections can use IDs up to 2^256). Null until first chunk.
+  lastEnumeratedTokenId: text("last_enumerated_token_id"),
+  // Backoff bookkeeping for collections whose host is dead/flaky.
+  // Incremented on each failed attempt, reset to 0 on success.
+  attemptCount: integer("attempt_count").notNull().default(0),
+  nextAttemptAt: timestamp("next_attempt_at"),
+  enumeratedAt: timestamp("enumerated_at"),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+}, (t) => ({
+  // Worker selects on (status, nextAttemptAt) to pick up rows ready to
+  // process. Composite index makes that scan a single seek.
+  statusIdx: index("collection_traits_status_idx").on(t.status, t.nextAttemptAt),
+}));

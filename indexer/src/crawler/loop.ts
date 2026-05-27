@@ -7,9 +7,10 @@ import { retemplateMissingImageTemplates } from "./retemplate.js";
 import { RpcSource } from "./rpc-source.js";
 import { refreshStats, startStatsLoop } from "./stats.js";
 import { refreshTiers, startTierLoop } from "./tier.js";
+import { startTraitWorker } from "./traits/worker.js";
 
 /**
- * Crawler orchestrator. Six tasks run inside one Node process:
+ * Crawler orchestrator. Seven tasks run inside one Node process:
  *
  *   1. Bootstrap — initial sweep from cutoff (now − RETENTION_DAYS) to
  *      current tip. Runs once. Resumes from cursor across restarts.
@@ -20,9 +21,18 @@ import { refreshTiers, startTierLoop } from "./tier.js";
  *      `activity` and `tokens` tables.
  *   5. Tier classification — assigns tier 0-2 based on stats + names.
  *   6. Pruning — daily cleanup of activity rows past retention window.
+ *   7. Trait index — per-collection trait manifest builder. Heaviest
+ *      I/O job in the indexer (one HTTP fetch per token), throttled to
+ *      100 concurrent fetches globally / 10 per host. Gated on
+ *      RUN_TRAIT_INDEX. Resumable per-collection via the
+ *      `collection_traits.lastEnumeratedTokenId` checkpoint.
  *
- * Tasks 2-6 run forever after their respective starts. Each installs a
+ * Tasks 2-7 run forever after their respective starts. Each installs a
  * SIGTERM handler so Railway can gracefully recycle the service.
+ *
+ * All tasks share the same Node event loop. API requests serve fine
+ * alongside them because every long-running operation `await`s on
+ * either I/O (HTTP, Postgres) or `setTimeout`, yielding to the loop.
  */
 export async function startCrawler() {
   const source = new RpcSource(env.MONAD_RPC);
@@ -112,6 +122,9 @@ export async function startCrawler() {
   ];
   if (env.RUN_ENRICHMENT) {
     tasks.push({ name: "enrich", promise: startEnrichment() });
+  }
+  if (env.RUN_TRAIT_INDEX) {
+    tasks.push({ name: "traits", promise: startTraitWorker() });
   }
   for (const task of tasks) {
     task.promise.catch((err) => {
