@@ -246,16 +246,36 @@ export function useTraitEnumeration(
             if (msg.type === "progress") {
               await publishProgress();
             } else if (msg.type === "done" || msg.type === "error") {
+              if (
+                msg.type === "error" &&
+                process.env.NODE_ENV !== "production"
+              ) {
+                console.warn(
+                  "[useTraitEnumeration] worker reported error:",
+                  msg.message,
+                );
+              }
               await publishFinal();
               worker.terminate();
               if (workerRef.current === worker) workerRef.current = null;
               resolve();
             }
           };
-          worker.onerror = () => {
+          worker.onerror = (err) => {
+            if (process.env.NODE_ENV !== "production") {
+              console.warn(
+                "[useTraitEnumeration] worker errored, falling back to inline:",
+                err.message,
+              );
+            }
             worker.terminate();
             if (workerRef.current === worker) workerRef.current = null;
             resolve();
+          };
+          worker.onmessageerror = (err) => {
+            if (process.env.NODE_ENV !== "production") {
+              console.warn("[useTraitEnumeration] worker message error:", err);
+            }
           };
           worker.postMessage({
             type: "start",
@@ -339,11 +359,22 @@ function spawnWorker(): Worker | null {
   if (typeof window === "undefined") return null;
   if (typeof Worker === "undefined") return null;
   try {
+    // IMPORTANT: must be a literal relative path. Turbopack / webpack
+    // detect `new URL("./...", import.meta.url)` syntax at build time
+    // to bundle the worker chunk. The `@/` alias is not parsed in this
+    // context — it silently produces a URL pointing at the literal
+    // string and the Worker construction either fails or loads nothing.
     return new Worker(
-      new URL("@/lib/workers/traitEnumeration.worker.ts", import.meta.url),
+      new URL(
+        "../lib/workers/traitEnumeration.worker.ts",
+        import.meta.url,
+      ),
       { type: "module" },
     );
-  } catch {
+  } catch (err) {
+    if (process.env.NODE_ENV !== "production") {
+      console.warn("[useTraitEnumeration] worker spawn failed:", err);
+    }
     return null;
   }
 }

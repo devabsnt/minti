@@ -86,9 +86,19 @@ export function shouldUseProxy(url: string): boolean {
   return false;
 }
 
-/** Build the proxy URL that wraps `target`. */
+/**
+ * Build the proxy URL that wraps `target`. Resolves to an absolute URL
+ * via `self.location.origin` because Web Workers don't share the
+ * page's `document.baseURI` and a bare `/api/proxy` can resolve oddly
+ * against the worker script's chunked URL under some bundler configs.
+ * `self.location` works in both main-thread and worker contexts.
+ */
 export function proxyUrlFor(target: string): string {
-  return `${WORKER_PROXY_URL}?url=${encodeURIComponent(target)}`;
+  const origin =
+    typeof self !== "undefined" && self.location
+      ? self.location.origin
+      : "";
+  return `${origin}${WORKER_PROXY_URL}?url=${encodeURIComponent(target)}`;
 }
 
 /**
