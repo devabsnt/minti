@@ -58,22 +58,26 @@ export async function startCrawler() {
     // Don't abort — bootstrap can still proceed without a successful prune.
   }
 
-  // 1. Bootstrap (blocking — we want this done before polling starts so
-  // there's no overlap window where the cursor jumps confusingly).
+  // 1. Bootstrap runs in the BACKGROUND. Historically this was awaited
+  // before starting other tasks "so there's no overlap window where the
+  // cursor jumps confusingly," but in practice a single stuck Monad RPC
+  // would park bootstrap for hours, which in turn parked stats, tier,
+  // enrichment, AND the trait worker — none of which actually care that
+  // bootstrap is still running. Inserts are idempotent (PK on
+  // (tx_hash, log_index)) so bootstrap + polling can safely race; they
+  // just discover the same rows from different ends and one wins.
   if (env.RUN_BOOTSTRAP) {
-    try {
-      const result = await runBootstrap(source);
-      console.log(
-        `[crawler] bootstrap finished: ${result.totalActivityRows} events, ${result.totalCollectionsTouched} collections, ${(result.elapsedMs / 1000).toFixed(1)}s`,
-      );
-    } catch (err) {
-      console.error(
-        `[crawler] bootstrap aborted: ${err instanceof Error ? err.message : err}`,
-      );
-      // Keep going — the periodic jobs are still valuable even if
-      // bootstrap died. They'll pick up newly-polled data once polling
-      // starts below.
-    }
+    runBootstrap(source)
+      .then((result) => {
+        console.log(
+          `[crawler] bootstrap finished: ${result.totalActivityRows} events, ${result.totalCollectionsTouched} collections, ${(result.elapsedMs / 1000).toFixed(1)}s`,
+        );
+      })
+      .catch((err) => {
+        console.error(
+          `[crawler] bootstrap aborted: ${err instanceof Error ? err.message : err}`,
+        );
+      });
   } else {
     console.log("[crawler] bootstrap skipped (RUN_BOOTSTRAP=0)");
   }
