@@ -15,12 +15,12 @@ import {
  *
  * For the remaining direct fetches (token detail page, trait enumeration,
  * legacy fallbacks): IPFS-shaped URIs race public gateways, and HTTP
- * URIs go directly to the host — except for hosts on the worker
- * allowlist (`PROXY_HOST_PATTERNS`) which don't send CORS headers and
- * must be routed through `ipfs-cache.devskibb.workers.dev/proxy?url=…`
- * to be readable from the browser. A direct fetch that fails with a
+ * URIs go directly to the host. A direct fetch that fails with a
  * TypeError (the browser's CORS-block signature) is retried through the
- * proxy and the host gets remembered as "proxy-preferred" for 24h.
+ * same-origin `/api/proxy` Vercel Route Handler and the host gets
+ * remembered as "proxy-preferred" for 24h so future fetches skip the
+ * wasted direct attempt. No host allowlist on the frontend — the route
+ * handler enforces its own server-side safety gates.
  */
 
 /**

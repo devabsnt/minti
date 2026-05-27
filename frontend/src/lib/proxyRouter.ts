@@ -1,7 +1,4 @@
-import {
-  PROXY_HOST_PATTERNS,
-  WORKER_PROXY_URL,
-} from "@/config/constants";
+import { WORKER_PROXY_URL } from "@/config/constants";
 
 // One-shot cleanup of old key versions so orphaned entries don't sit
 // in localStorage forever. Runs on first module import in a browser.
@@ -18,9 +15,9 @@ if (typeof localStorage !== "undefined") {
   }
 }
 
-// v2: cleared after a previous build briefly auto-routed scatter.art
-// (and others on the old allowlist) through the proxy. Bumping the key
-// invalidates those stale entries so direct fetch gets to run again.
+// v2: cleared after a previous build briefly auto-routed allowlisted
+// hosts through the Cloudflare worker. Bumping the key invalidates
+// those stale entries so direct fetch gets to run again.
 const STORAGE_KEY = "minti.proxyPreferredHosts.v2";
 const DEAD_HOSTS_KEY = "minti.deadHosts.v2";
 const TTL_MS = 24 * 60 * 60 * 1000; // 24h
@@ -64,22 +61,19 @@ function hostFromUrl(url: string): string | null {
   }
 }
 
-function matchesAllowlist(host: string): boolean {
-  return PROXY_HOST_PATTERNS.some((re) => re.test(host));
-}
-
 /**
- * Should `url` be fetched through the Cloudflare proxy instead of direct?
+ * Should `url` be fetched through the proxy instead of direct?
  *
- * Strategy: **optimistic direct first**. We don't pre-emptively proxy
- * allowlisted hosts because many of them (scatter.art is the canonical
- * example) DO serve CORS to browsers fine and the proxy just adds a
- * 502 risk when the worker's egress IP gets rate-limited or blocked.
+ * Strategy: **optimistic direct first**. Return true only for hosts
+ * that have already failed CORS during this session or within the
+ * persisted TTL. New hosts always get a direct attempt — the proxy
+ * fallback kicks in only when that direct attempt actually fails.
  *
- * Returns true only for hosts that have **already failed CORS** during
- * this session OR within the persisted TTL window. `canProxyUrl`
- * separately gates whether the proxy fallback is even an option (i.e.
- * whether the worker's allowlist will accept the URL).
+ * No allowlist: we used to keep one (scatter.art, pancakeswap, etc.)
+ * but collections invent new metadata hosts constantly and curation
+ * was perpetually out of date. The Vercel route handler has its own
+ * server-side safety gates (https-only, no private IPs, size cap)
+ * that don't depend on enumerating every possible host.
  */
 export function shouldUseProxy(url: string): boolean {
   if (!WORKER_PROXY_URL) return false;
@@ -92,23 +86,20 @@ export function shouldUseProxy(url: string): boolean {
   return false;
 }
 
-/** Build the worker URL that proxies `target`. */
+/** Build the proxy URL that wraps `target`. */
 export function proxyUrlFor(target: string): string {
-  return `${WORKER_PROXY_URL}/proxy?url=${encodeURIComponent(target)}`;
+  return `${WORKER_PROXY_URL}?url=${encodeURIComponent(target)}`;
 }
 
 /**
- * Mark a host as "proxy-preferred" after a direct fetch produced an error
- * that smells like CORS (TypeError in the browser). Persists across page
- * reloads with a 24h TTL so the next visit skips straight to the proxy.
- *
- * Caller already verified the host is one the worker accepts (otherwise
- * the proxy will 403). Use `canProxyHost(host)` to gate.
+ * Mark a host as "proxy-preferred" after a direct fetch failed with
+ * what looks like a CORS error (TypeError on a real https URL).
+ * Persists across page reloads with a 24h TTL so the next visit skips
+ * straight to the proxy.
  */
 export function markProxyPreferred(url: string): void {
   const host = hostFromUrl(url);
   if (!host) return;
-  if (!canProxyHost(host)) return;
   SESSION_PREFERRED.add(host);
   const entries = safeReadPersisted(STORAGE_KEY).filter((e) => e.host !== host);
   entries.push({ host, until: Date.now() + TTL_MS });
@@ -126,6 +117,20 @@ export function unmarkProxyPreferred(url: string): void {
   SESSION_PREFERRED.delete(host);
   const entries = safeReadPersisted(STORAGE_KEY).filter((e) => e.host !== host);
   safeWritePersisted(STORAGE_KEY, entries);
+}
+
+/**
+ * The proxy is available for any host that survives the route's own
+ * gates (https + non-private IP). The frontend doesn't need its own
+ * allowlist — anything that fails direct fetch is eligible.
+ */
+export function canProxyUrl(url: string): boolean {
+  if (!WORKER_PROXY_URL) return false;
+  const host = hostFromUrl(url);
+  if (!host) return false;
+  // Don't try to proxy the proxy itself.
+  if (host === hostFromUrl(WORKER_PROXY_URL)) return false;
+  return true;
 }
 
 /**
@@ -166,16 +171,4 @@ export function isHostDead(url: string): boolean {
     }
   }
   return false;
-}
-
-/** Worker accepts this host on /proxy? */
-export function canProxyHost(host: string): boolean {
-  return matchesAllowlist(host);
-}
-
-/** True for hosts we'd like to attempt-retry through the proxy on CORS failure. */
-export function canProxyUrl(url: string): boolean {
-  const host = hostFromUrl(url);
-  if (!host) return false;
-  return canProxyHost(host);
 }
