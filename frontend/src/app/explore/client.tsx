@@ -464,7 +464,7 @@ function FeaturedCard({ entry }: { entry: FeaturedCollectionEntry }) {
                 decoding="async"
                 // eslint-disable-next-line @typescript-eslint/no-explicit-any
                 {...({ fetchpriority: "low" } as any)}
-                referrerPolicy="no-referrer"
+                referrerPolicy="origin"
                 className={
                   driftable
                     ? "h-full w-auto flex-shrink-0 object-contain"
@@ -804,7 +804,7 @@ function TrendingPodiumCard({
                 decoding="async"
                 // eslint-disable-next-line @typescript-eslint/no-explicit-any
                 {...({ fetchpriority: "low" } as any)}
-                referrerPolicy="no-referrer"
+                referrerPolicy="origin"
                 // driftable: keep natural aspect ratio, height = bar.
                 // single-image: cover the whole bar (no letterboxing).
                 className={

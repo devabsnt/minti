@@ -94,7 +94,7 @@ function ToastContainer({
       role="region"
       aria-label="Notifications"
       aria-live="polite"
-      className="fixed bottom-4 right-4 z-50 flex flex-col gap-2 max-w-sm"
+      className="fixed bottom-4 right-4 z-[100] flex flex-col gap-2 max-w-sm"
     >
       {toasts.map((toast) => (
         <div

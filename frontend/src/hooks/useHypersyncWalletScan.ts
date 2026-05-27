@@ -146,6 +146,7 @@ export function useHypersyncWalletScan(
     isLoading: false,
     isBackScanning: false,
     backwardProgress: 0,
+    retryAfterSeconds: 0,
   });
 
   const abortRef = useRef(false);
@@ -256,7 +257,36 @@ export function useHypersyncWalletScan(
       log(`fetched ${result.logs.length} logs → ${newEvents.length} new candidates`);
     } catch (err) {
       log("hypersync error:", err);
-      setState((p) => ({ ...p, isLoading: false, isBackScanning: false }));
+      // 429 means the public scanner is saturated. Surface the
+      // Retry-After to the UI and schedule a retry instead of failing
+      // silently — the worker honors a queue, our job is to wait.
+      const rateLimitErr = err as Error & {
+        isRateLimit?: boolean;
+        retryAfterSeconds?: number;
+      };
+      if (rateLimitErr?.isRateLimit) {
+        const wait = Math.max(1, rateLimitErr.retryAfterSeconds ?? 5);
+        setState((p) => ({
+          ...p,
+          isLoading: false,
+          isBackScanning: false,
+          retryAfterSeconds: wait,
+        }));
+        runningRef.current = false;
+        setTimeout(() => {
+          if (!abortRef.current) {
+            setState((p) => ({ ...p, retryAfterSeconds: 0 }));
+            scan();
+          }
+        }, wait * 1000);
+        return;
+      }
+      setState((p) => ({
+        ...p,
+        isLoading: false,
+        isBackScanning: false,
+        retryAfterSeconds: 0,
+      }));
       runningRef.current = false;
       return;
     }

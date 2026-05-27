@@ -31,9 +31,18 @@ export function EnumeratedTraitFilter({
   selected,
   onChange,
 }: EnumeratedTraitFilterProps) {
-  const isLoading =
-    state.status === "checking" || state.status === "enumerating";
+  // `partial` means we have *some* traits already and the enumerator is
+  // still filling in the rest. The dropdowns are active immediately so
+  // users can filter on what we've got while the progress pill keeps
+  // counting. `checking` runs the reveal-verification multicall, so we
+  // treat it as loading even if we have cached data to display.
+  const isFilling =
+    state.status === "checking" ||
+    state.status === "enumerating" ||
+    state.status === "partial";
   const isReady = state.status === "complete";
+  const dropdownsDisabled =
+    state.status === "checking" || state.status === "enumerating";
   const traitTypes = useMemo(
     () =>
       Object.keys(state.traitCounts).sort((a, b) =>
@@ -51,21 +60,19 @@ export function EnumeratedTraitFilter({
   // Don't render at all when enumeration produced nothing useful
   // (all_identical or failed with empty data). The collection gallery
   // would have nothing to filter and the empty bar reads as noise.
-  if (
-    !isLoading &&
-    state.status !== "complete" &&
-    traitTypes.length === 0
-  ) {
+  if (!isFilling && !isReady && traitTypes.length === 0) {
     return null;
   }
 
   return (
-    <div className="mb-6 stamp-shadow border border-border bg-background-secondary">
+    <div className="mb-6 sticky top-16 z-[80] stamp-shadow border border-border bg-background-secondary">
       <div className="flex flex-wrap items-center gap-2 px-4 py-3">
-        {isLoading ? (
+        {isFilling ? (
           <span className="inline-flex items-center gap-2 px-3 py-1.5 text-xs font-medium bg-background-tertiary border border-border">
             <Spinner />
-            Fetching trait data... {Math.round(state.progress * 100)}%
+            {state.status === "partial" && state.enumeratedCount > 0
+              ? `Filter by trait (${state.enumeratedCount}/${state.totalSupply} known)`
+              : `Fetching trait data... ${Math.round(state.progress * 100)}%`}
           </span>
         ) : isReady && traitTypes.length > 0 ? (
           <span className="text-sm font-semibold mr-2">
@@ -80,7 +87,7 @@ export function EnumeratedTraitFilter({
             values={state.traitCounts[traitType]}
             totalSupply={state.enumeratedCount || state.totalSupply}
             selected={selected[traitType] ?? new Set()}
-            disabled={isLoading}
+            disabled={dropdownsDisabled}
             onToggle={(value) => {
               const next: TraitSelection = { ...selected };
               const current = new Set(next[traitType] ?? []);
@@ -181,7 +188,7 @@ function TraitDropdown({
         </span>
       </button>
       {open && (
-        <div className="absolute top-full left-0 mt-1 z-20 w-64 max-h-72 overflow-y-auto border border-border bg-background-secondary stamp-shadow">
+        <div className="absolute top-full left-0 mt-1 z-[95] w-64 max-h-72 overflow-y-auto border border-border bg-background-secondary stamp-shadow">
           <ul className="divide-y divide-border">
             {sorted.map(([value, count]) => {
               const isSelected = selected.has(value);

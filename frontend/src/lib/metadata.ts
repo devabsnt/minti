@@ -1,14 +1,25 @@
 import { IPFS_GATEWAYS } from "@/config/constants";
 import type { NftMetadata } from "@/types/nft";
+import {
+  canProxyUrl,
+  markProxyPreferred,
+  proxyUrlFor,
+  shouldUseProxy,
+} from "@/lib/proxyRouter";
 
 /**
- * Frontend metadata resolution is now indexer-first: collection-level
- * sample images + per-token imageUrlTemplate substitution cover the
- * vast majority of render paths without ever calling a metadata host
- * from the browser. The few remaining direct fetches (token detail page,
- * legacy fallbacks) go directly to the host — CORS-blocked hosts just
- * fail to a placeholder, no worker-proxy detour. The Cloudflare worker
- * is no longer in the path.
+ * Frontend metadata resolution is indexer-first (collection-level sample
+ * images + per-token imageUrlTemplate substitution cover the vast majority
+ * of render paths without ever calling a metadata host from the browser).
+ *
+ * For the remaining direct fetches (token detail page, trait enumeration,
+ * legacy fallbacks): IPFS-shaped URIs race public gateways, and HTTP
+ * URIs go directly to the host — except for hosts on the worker
+ * allowlist (`PROXY_HOST_PATTERNS`) which don't send CORS headers and
+ * must be routed through `ipfs-cache.devskibb.workers.dev/proxy?url=…`
+ * to be readable from the browser. A direct fetch that fails with a
+ * TypeError (the browser's CORS-block signature) is retried through the
+ * proxy and the host gets remembered as "proxy-preferred" for 24h.
  */
 
 /**
@@ -155,13 +166,22 @@ async function fetchTextWithRetry(
   timeoutMs = 10_000,
 ): Promise<string> {
   let lastErr: Error | null = null;
+  // Pick the initial URL: route through the worker proxy if the host is
+  // on the allowlist OR previously CORS-failed. On a TypeError below we
+  // retry once through the proxy and remember the host for next time.
+  let effectiveUrl = shouldUseProxy(url) ? proxyUrlFor(url) : url;
+  let proxiedAlready = effectiveUrl !== url;
   for (let i = 0; i < attempts; i++) {
     let delayBeforeNext = 200 * Math.pow(3, i); // 200ms, 600ms default
     try {
-      const response = await fetch(url, {
+      const response = await fetch(effectiveUrl, {
         signal: AbortSignal.timeout(timeoutMs),
         credentials: "omit",
-        referrerPolicy: "no-referrer",
+        // `origin` (not `no-referrer`) lets hosts that gate CORS on the
+        // Referer header still serve us. Sends `https://minti.art/` only,
+        // not the full path — privacy-equivalent for the "don't leak
+        // token paths" goal that the original no-referrer was protecting.
+        referrerPolicy: "origin",
       });
       if (response.ok) return await response.text();
       if (response.status === 429) {
@@ -183,6 +203,21 @@ async function fetchTextWithRetry(
     } catch (err) {
       lastErr = err instanceof Error ? err : new Error(String(err));
       // Abort/timeout/typeerror - all retryable, short backoff.
+      // TypeError on a direct fetch is the browser's CORS-block tell.
+      // If the host is on the worker allowlist, swap to the proxy URL
+      // for the remaining attempts AND remember this host so future
+      // calls skip the wasted direct attempt.
+      if (
+        !proxiedAlready &&
+        lastErr instanceof TypeError &&
+        canProxyUrl(url)
+      ) {
+        markProxyPreferred(url);
+        effectiveUrl = proxyUrlFor(url);
+        proxiedAlready = true;
+        // Don't wait the full backoff — proxy is a different host
+        delayBeforeNext = 0;
+      }
     }
     if (i < attempts - 1) {
       await new Promise((r) => setTimeout(r, delayBeforeNext));
@@ -447,6 +482,55 @@ export function extrapolateImageUrl(
     );
   }
   return null;
+}
+
+/**
+ * Build a templatized URI from a reference URI + reference tokenId so
+ * the template can be expanded for arbitrary other tokenIds without a
+ * tokenURI multicall. Returns `referenceUri` unchanged if it already
+ * contains `{id}`, the templatized form with `{id}` substituted where
+ * the reference id appeared, or null when no boundary-safe slot for
+ * the reference id is found (per-token unique CIDs, off-chain APIs).
+ *
+ * Same boundary heuristic as `extrapolateImageUrl` — only accept slots
+ * where the surrounding characters are non-alphanumeric so we don't
+ * rewrite part of a CID.
+ */
+export function buildUriTemplate(
+  referenceUri: string,
+  referenceTokenId: bigint,
+): string | null {
+  if (!referenceUri) return null;
+  if (referenceUri.includes("{id}")) return referenceUri;
+  const refDec = referenceTokenId.toString();
+  const refHex = referenceTokenId.toString(16);
+  const refHexPad = refHex.padStart(64, "0");
+  const candidates = [refHexPad, refDec, ...(refHex !== refDec ? [refHex] : [])];
+  for (const refStr of candidates) {
+    const idx = referenceUri.lastIndexOf(refStr);
+    if (idx === -1) continue;
+    const before = referenceUri[idx - 1];
+    const after = referenceUri[idx + refStr.length];
+    const isBoundary = (ch: string | undefined) =>
+      ch == null || !/[A-Za-z0-9]/.test(ch);
+    if (!isBoundary(before) || !isBoundary(after)) continue;
+    return (
+      referenceUri.slice(0, idx) +
+      "{id}" +
+      referenceUri.slice(idx + refStr.length)
+    );
+  }
+  return null;
+}
+
+/** Expand a `{id}`-containing template for the given tokenId. */
+export function expandUriTemplate(template: string, tokenId: bigint): string {
+  if (!template.includes("{id}")) return template;
+  // Prefer decimal substitution — most collections that template their
+  // baseURI use decimal IDs. ERC-1155 spec's padded-hex is rarer in the
+  // wild than the spec implies; `resolveMetadata`'s `idVariants` will
+  // try padded hex as a fallback if the decimal-expanded URL 404s.
+  return template.replace(/\{id\}/g, tokenId.toString());
 }
 
 /**

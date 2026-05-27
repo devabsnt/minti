@@ -26,6 +26,17 @@ export const HYPERSYNC_ENDPOINTS: Record<number, string> = {
   143: "https://monad-hypersync-proxy.devskibb.workers.dev", // Monad mainnet (CORS proxy → monad.hypersync.xyz)
 };
 
+function parseRetryAfterSeconds(header: string | null): number {
+  if (!header) return 5;
+  const n = Number(header);
+  if (Number.isFinite(n) && n >= 0) return Math.min(60, Math.max(1, Math.round(n)));
+  const dateMs = Date.parse(header);
+  if (!Number.isNaN(dateMs)) {
+    return Math.max(1, Math.min(60, Math.ceil((dateMs - Date.now()) / 1000)));
+  }
+  return 5;
+}
+
 export function hasHypersync(chainId: number): boolean {
   return chainId in HYPERSYNC_ENDPOINTS;
 }
@@ -164,6 +175,16 @@ export async function queryIncomingTransfers(
       body: JSON.stringify(body),
     });
 
+    if (resp.status === 429) {
+      const retryAfter = parseRetryAfterSeconds(resp.headers.get("retry-after"));
+      const err = new Error(`Hypersync rate-limited (429)`) as Error & {
+        isRateLimit: true;
+        retryAfterSeconds: number;
+      };
+      err.isRateLimit = true;
+      err.retryAfterSeconds = retryAfter;
+      throw err;
+    }
     if (!resp.ok) {
       const text = await resp.text().catch(() => "");
       throw new Error(`Hypersync ${resp.status}: ${text.slice(0, 200)}`);

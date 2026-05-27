@@ -194,6 +194,7 @@ function OwnedTab({
     error,
     isBackScanning,
     backwardProgress,
+    retryAfterSeconds,
   } = useWalletNfts(address, trackedCollections);
 
   // ── Flatten all collections into a single token list ────────────
@@ -353,6 +354,17 @@ function OwnedTab({
           backwardProgress={backwardProgress}
           discoveredCount={visible.length + hidden.length}
         />
+      )}
+
+      {/* Hypersync proxy is rate-limited — your scan is queued. */}
+      {retryAfterSeconds > 0 && (
+        <div className="px-4 py-2 border border-warning/30 rounded-lg bg-warning/5 text-xs text-warning flex items-center gap-2">
+          <span
+            className="inline-block w-1.5 h-1.5 rounded-full bg-warning animate-pulse"
+            aria-hidden
+          />
+          Public scanner busy — your scan will resume in {retryAfterSeconds}s
+        </div>
       )}
 
       <div className="flex gap-6">

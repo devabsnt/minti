@@ -11,35 +11,37 @@ import {
   decodeResult,
   type MulticallRequest,
 } from "@/lib/rpcPool";
-import { resolveMetadata } from "@/lib/metadata";
+import { useIndexerCollection } from "@/hooks/useIndexerCollections";
 import {
-  getTraitCache,
-  setTraitCache,
+  aggregateTokenIds,
+  getAggregateForCollection,
   type CachedTraitData,
   type TokenAttribute,
 } from "@/lib/traitsCache";
+import { runFillLoop } from "@/lib/traitFillLoop";
+import type { WorkerOutMessage } from "@/lib/workers/traitEnumeration.worker";
 
 /**
- * Client-side trait enumeration for a collection.
+ * Client-side trait enumeration that gap-fills the metadata cache and
+ * runs the heavy work in a Web Worker so the main thread stays
+ * interactive while large collections enumerate.
  *
- * Behavior:
- *   1. On mount, check IndexedDB for a complete cache.
- *   2. If cached, sample-check 3 random cached tokenURIs against
- *      the chain. Any mismatch = the collection was re-revealed,
- *      invalidate and re-enumerate.
- *   3. If no cache or invalidated, walk every token from
- *      `tokenIdStart` to `tokenIdStart + totalSupply - 1`:
- *        - Multicall3 batches of 100 token IDs to fetch tokenURI
- *        - Up to 30 in-flight JSON fetches in parallel
- *        - Parse attributes, accumulate counts
- *      Progress is exposed as a 0..1 ratio while running.
- *   4. Compute per-token rarity score (sum of supply/count for each
- *      attribute the token has) and rank.
- *   5. Persist to IndexedDB.
+ * Flow:
+ *   1. Seed state from `getAggregateForCollection` — topbar filter is
+ *      usable immediately, even with partial data.
+ *   2. Verify cached samples haven't shifted (reveal detection runs on
+ *      the main thread because it needs the shared RPC pool state).
+ *   3. Spawn a worker that runs `runFillLoop` — multicall encoding,
+ *      JSON fetching, attribute aggregation, and IndexedDB writes all
+ *      happen off the main thread.
+ *   4. On each progress message, re-read the aggregate from IndexedDB
+ *      and publish it to React state.
+ *   5. On unmount or dep change, cancel + terminate the worker.
  *
- * Pass `enabled: false` to skip enumeration (e.g. when an EVMFS
- * manifest is available - that source is canonical and there's no
- * point doing a separate RPC walk).
+ * If the browser can't spawn a worker (SSR, unusual config), the fill
+ * loop runs inline on the main thread — same code path either way.
+ *
+ * Pass `enabled: false` to skip enumeration (EVMFS manifest path).
  */
 const TOKEN_URI_ABI = [
   {
@@ -55,13 +57,14 @@ export type EnumerationStatus =
   | "idle"
   | "checking"
   | "enumerating"
+  | "partial"
   | "complete"
   | "failed"
   | "all_identical";
 
 export interface EnumerationState {
   status: EnumerationStatus;
-  /** 0..1; only meaningful when status === 'enumerating'. */
+  /** 0..1; meaningful when status is `enumerating` or `partial`. */
   progress: number;
   enumeratedCount: number;
   totalSupply: number;
@@ -82,26 +85,8 @@ const INITIAL_STATE: EnumerationState = {
   rarityRanks: {},
 };
 
-// Multicall3 batch size for tokenURI lookups. Tuned for Monad's
-// public RPC gas limits; larger batches occasionally hit the cap.
-const URI_BATCH_SIZE = 200;
-// Number of URI-batch RPC calls to dispatch concurrently. The RPC
-// pool distributes across its underlying endpoints, so this is
-// effectively "how many endpoints we're hitting in parallel."
-const URI_BATCH_PARALLELISM = 5;
-// Parallel JSON fetches. Tuned down from a more aggressive value
-// because some metadata hosts (notably evmfs.xyz, which reads
-// on-chain log data per request) rate-limit at 429 when we hit them
-// too hard. The fetch helper now retries 429 with backoff, so we
-// stay polite even at this concurrency.
-const JSON_CONCURRENCY = 30;
-// Number of cached tokenURIs to re-fetch on revisit to detect a
-// reveal / baseURI swap.
+// Number of cached samples to re-fetch on revisit for reveal detection.
 const SAMPLE_SIZE = 3;
-// Bail out of JSON fetching if this many consecutive failures land
-// from the same host - usually CORS-blocked. Lower number = quieter
-// console, slightly less coverage on truly transient failures.
-const JSON_FAILURE_BAIL = 15;
 
 export function useTraitEnumeration(
   contract: string | undefined,
@@ -111,11 +96,11 @@ export function useTraitEnumeration(
 ): EnumerationState {
   const { browseChainId } = useBrowseChain();
   const { getEffectiveRpc } = useRpc();
+  const indexerCollection = useIndexerCollection(contract);
   const [state, setState] = useState<EnumerationState>(INITIAL_STATE);
   const cancelRef = useRef(false);
-  // Stable identity for the run so async chains can self-cancel
-  // when the contract/totalSupply changes mid-walk.
   const runIdRef = useRef(0);
+  const workerRef = useRef<Worker | null>(null);
 
   useEffect(() => {
     if (!enabled) return;
@@ -124,87 +109,185 @@ export function useTraitEnumeration(
     cancelRef.current = false;
     const contractLower = contract.toLowerCase();
     const userRpc = getEffectiveRpc(browseChainId);
+    const indexerTemplate =
+      indexerCollection.data?.collection?.tokenUriTemplate ?? null;
 
     async function run() {
       setState((s) => ({ ...s, status: "checking" }));
 
-      // 1. Cache lookup
-      const cached = await getTraitCache(browseChainId, contractLower);
+      // 1. Seed from existing aggregate
+      let aggregate = await getAggregateForCollection(
+        browseChainId,
+        contractLower,
+      );
       if (myRunId !== runIdRef.current) return;
 
-      if (
-        cached &&
-        cached.status === "complete" &&
-        cached.totalSupply === totalSupply &&
-        cached.sampledTokenURIs.length > 0
-      ) {
-        const stillValid = await verifyCacheBySampling(
-          contract!,
-          cached,
+      if (aggregate) {
+        const stillValid = await verifyAggregateBySampling(
+          contractLower,
+          aggregate,
           browseChainId,
           userRpc,
         );
         if (myRunId !== runIdRef.current) return;
-        if (stillValid) {
-          setState({
-            status: "complete",
-            progress: 1,
-            enumeratedCount: Object.keys(cached.tokenAttributes).length,
-            totalSupply: cached.totalSupply,
-            traitCounts: cached.traitCounts,
-            tokenAttributes: cached.tokenAttributes,
-            rarityScores: cached.rarityScores,
-            rarityRanks: cached.rarityRanks,
-          });
-          return;
-        }
+        if (!stillValid) aggregate = undefined;
       }
 
-      // 2. Full enumeration
-      setState((s) => ({
-        ...s,
-        status: "enumerating",
-        progress: 0,
-        enumeratedCount: 0,
-        totalSupply: totalSupply!,
-      }));
+      const initialCount = aggregate
+        ? Object.keys(aggregate.tokenAttributes).length
+        : 0;
+      const isAlreadyComplete =
+        aggregate &&
+        aggregate.totalSupply === totalSupply &&
+        (aggregate.status === "complete" ||
+          aggregate.status === "all_identical") &&
+        initialCount >= totalSupply!;
 
-      const result = await enumerate({
-        contract: contract!,
-        chainId: browseChainId,
-        totalSupply: totalSupply!,
-        tokenIdStart,
-        userRpc,
-        onProgress: (count) => {
-          if (myRunId !== runIdRef.current) return;
-          setState((s) => ({
-            ...s,
-            enumeratedCount: count,
-            progress: count / totalSupply!,
-          }));
-        },
-        cancelled: () => cancelRef.current || myRunId !== runIdRef.current,
-      });
-      if (myRunId !== runIdRef.current) return;
-
-      if (!result) {
-        setState((s) => ({ ...s, status: "failed" }));
+      if (isAlreadyComplete && aggregate) {
+        setState({
+          status:
+            aggregate.status === "all_identical" ? "all_identical" : "complete",
+          progress: 1,
+          enumeratedCount: initialCount,
+          totalSupply: aggregate.totalSupply,
+          traitCounts: aggregate.traitCounts,
+          tokenAttributes: aggregate.tokenAttributes,
+          rarityScores: aggregate.rarityScores,
+          rarityRanks: aggregate.rarityRanks,
+        });
         return;
       }
 
-      await setTraitCache(result);
-
-      const tokenCount = Object.keys(result.tokenAttributes).length;
-      setState({
-        status: result.status,
-        progress: 1,
-        enumeratedCount: tokenCount,
-        totalSupply: result.totalSupply,
-        traitCounts: result.traitCounts,
-        tokenAttributes: result.tokenAttributes,
-        rarityScores: result.rarityScores,
-        rarityRanks: result.rarityRanks,
+      const partialState = (
+        progress: number,
+        count: number,
+        agg: CachedTraitData | undefined,
+      ): EnumerationState => ({
+        status: "partial",
+        progress,
+        enumeratedCount: count,
+        totalSupply: totalSupply!,
+        traitCounts: agg?.traitCounts ?? {},
+        tokenAttributes: agg?.tokenAttributes ?? {},
+        rarityScores: agg?.rarityScores ?? {},
+        rarityRanks: agg?.rarityRanks ?? {},
       });
+
+      setState(
+        partialState(
+          totalSupply! > 0 ? initialCount / totalSupply! : 0,
+          initialCount,
+          aggregate,
+        ),
+      );
+
+      const seenIds = aggregateTokenIds(aggregate);
+
+      // 2. Run the fill loop. Prefer a Web Worker so multicall encoding
+      //    + JSON parsing don't block paint on big collections. Fall
+      //    back to inline execution if worker construction fails (SSR,
+      //    blocked by CSP, unusual config).
+      setState((s) => ({ ...s, status: "enumerating" }));
+
+      // Helper: re-read aggregate and publish to React state.
+      const publishProgress = async () => {
+        const fresh = await getAggregateForCollection(
+          browseChainId,
+          contractLower,
+        );
+        if (myRunId !== runIdRef.current) return;
+        const enumeratedCount = Object.keys(
+          fresh?.tokenAttributes ?? {},
+        ).length;
+        const progress =
+          totalSupply! > 0 ? Math.min(1, enumeratedCount / totalSupply!) : 0;
+        setState(partialState(progress, enumeratedCount, fresh));
+      };
+
+      // Helper: finalize and publish terminal state.
+      const publishFinal = async () => {
+        const finalAgg = await getAggregateForCollection(
+          browseChainId,
+          contractLower,
+        );
+        if (myRunId !== runIdRef.current || !finalAgg) return;
+        const enumeratedCount = Object.keys(finalAgg.tokenAttributes).length;
+        const finalProgress =
+          totalSupply! > 0 ? Math.min(1, enumeratedCount / totalSupply!) : 0;
+        setState({
+          status:
+            finalAgg.status === "all_identical"
+              ? "all_identical"
+              : finalAgg.status === "complete"
+                ? "complete"
+                : finalAgg.status === "failed"
+                  ? "failed"
+                  : "partial",
+          progress: finalProgress,
+          enumeratedCount,
+          totalSupply: finalAgg.totalSupply,
+          traitCounts: finalAgg.traitCounts,
+          tokenAttributes: finalAgg.tokenAttributes,
+          rarityScores: finalAgg.rarityScores,
+          rarityRanks: finalAgg.rarityRanks,
+        });
+      };
+
+      const worker = spawnWorker();
+      if (worker) {
+        workerRef.current?.terminate();
+        workerRef.current = worker;
+
+        await new Promise<void>((resolve) => {
+          worker.onmessage = async (event: MessageEvent<WorkerOutMessage>) => {
+            const msg = event.data;
+            if (msg.runId !== myRunId) return;
+            if (msg.type === "progress") {
+              await publishProgress();
+            } else if (msg.type === "done" || msg.type === "error") {
+              await publishFinal();
+              worker.terminate();
+              if (workerRef.current === worker) workerRef.current = null;
+              resolve();
+            }
+          };
+          worker.onerror = () => {
+            worker.terminate();
+            if (workerRef.current === worker) workerRef.current = null;
+            resolve();
+          };
+          worker.postMessage({
+            type: "start",
+            runId: myRunId,
+            payload: {
+              contract: contractLower,
+              chainId: browseChainId,
+              totalSupply: totalSupply!,
+              tokenIdStart,
+              userRpc,
+              seenTokenIds: Array.from(seenIds),
+              indexerTemplate,
+            },
+          });
+        });
+      } else {
+        // Worker unavailable — run inline. Same code path; main thread
+        // pays the cost.
+        await runFillLoop({
+          contract: contractLower,
+          chainId: browseChainId,
+          totalSupply: totalSupply!,
+          tokenIdStart,
+          userRpc,
+          seenTokenIds: seenIds,
+          indexerTemplate,
+          onProgress: () => {
+            void publishProgress();
+          },
+          cancelled: () => cancelRef.current || myRunId !== runIdRef.current,
+        });
+        await publishFinal();
+      }
     }
 
     run().catch((err) => {
@@ -212,35 +295,72 @@ export function useTraitEnumeration(
         console.error("[useTraitEnumeration] failed:", err);
       }
       if (myRunId === runIdRef.current) {
-        setState((s) => ({ ...s, status: "failed" }));
+        setState((s) => ({
+          ...s,
+          status: s.enumeratedCount > 0 ? "partial" : "failed",
+        }));
       }
     });
 
     return () => {
       cancelRef.current = true;
+      const worker = workerRef.current;
+      if (worker) {
+        worker.postMessage({ type: "cancel", runId: myRunId });
+        worker.terminate();
+        workerRef.current = null;
+      }
     };
     // getEffectiveRpc identity changes only when the RPC pool changes,
-    // not per render. browseChainId and contract drive the actual work.
+    // not per render. browseChainId / contract / totalSupply drive work.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [contract, totalSupply, tokenIdStart, browseChainId, enabled]);
+  }, [
+    contract,
+    totalSupply,
+    tokenIdStart,
+    browseChainId,
+    enabled,
+    indexerCollection.data?.collection?.tokenUriTemplate,
+  ]);
 
   return state;
 }
 
+// ── Worker construction ─────────────────────────────────────────
+
 /**
- * Sample-check cached entries: re-fetch `tokenURI(id)` for a few
- * randomly-chosen tokens and compare against the cached URI. Any
- * mismatch indicates a reveal / baseURI swap and the cache is stale.
+ * Spawn the trait enumeration worker. Returns null in environments
+ * where Web Workers aren't available (SSR, CSP, very old browsers).
+ * Caller falls back to inline execution in that case.
  */
-async function verifyCacheBySampling(
+function spawnWorker(): Worker | null {
+  if (typeof window === "undefined") return null;
+  if (typeof Worker === "undefined") return null;
+  try {
+    return new Worker(
+      new URL("@/lib/workers/traitEnumeration.worker.ts", import.meta.url),
+      { type: "module" },
+    );
+  } catch {
+    return null;
+  }
+}
+
+// ── Helpers ─────────────────────────────────────────────────────
+
+/**
+ * Re-fetch a few of the cached `tokenURI` samples and compare against
+ * what the chain returns now. Any mismatch indicates a reveal / baseURI
+ * swap and the aggregate is stale.
+ */
+async function verifyAggregateBySampling(
   contract: string,
-  cached: CachedTraitData,
+  aggregate: CachedTraitData,
   chainId: number,
   userRpc: string | undefined,
 ): Promise<boolean> {
-  if (cached.sampledTokenURIs.length === 0) return true; // nothing to verify
-  // Pick a random subset of the cached samples.
-  const samples = shuffle(cached.sampledTokenURIs).slice(0, SAMPLE_SIZE);
+  if (aggregate.sampledTokenURIs.length === 0) return true;
+  const samples = shuffle(aggregate.sampledTokenURIs).slice(0, SAMPLE_SIZE);
   const pool = createRpcPool(chainId, userRpc);
   const calls: MulticallRequest[] = samples.map((s) =>
     encodeCall(contract as `0x${string}`, TOKEN_URI_ABI, "tokenURI", [
@@ -252,185 +372,14 @@ async function verifyCacheBySampling(
     const flat = results.flat();
     for (let i = 0; i < samples.length; i++) {
       const entry = flat[i];
-      if (!entry || !entry.success) continue; // skip unverifiable samples
+      if (!entry || !entry.success) continue;
       const uri = decodeResult<string>(TOKEN_URI_ABI, "tokenURI", entry);
       if (uri && uri !== samples[i].uri) return false;
     }
     return true;
   } catch {
-    // If sampling failed entirely (RPCs all down), trust the cache.
     return true;
   }
-}
-
-interface EnumerateParams {
-  contract: string;
-  chainId: number;
-  totalSupply: number;
-  tokenIdStart: number;
-  userRpc: string | undefined;
-  onProgress: (count: number) => void;
-  cancelled: () => boolean;
-}
-
-async function enumerate(params: EnumerateParams): Promise<CachedTraitData | null> {
-  const { contract, chainId, totalSupply, tokenIdStart, userRpc } = params;
-  const contractLower = contract.toLowerCase();
-  const pool = createRpcPool(chainId, userRpc);
-
-  // Build the token-ID list: tokenIdStart through tokenIdStart + supply - 1.
-  const tokenIds: bigint[] = [];
-  for (let i = 0; i < totalSupply; i++) {
-    tokenIds.push(BigInt(tokenIdStart + i));
-  }
-
-  // Step A: Multicall3-batched tokenURI fetches.
-  // Multiple URI batches dispatch concurrently. The RPC pool spreads
-  // them across its endpoints so this scales near-linearly with the
-  // number of healthy nodes.
-  const uriByTokenId = new Map<string, string>();
-  const sampledForReveal: Array<{ tokenId: string; uri: string }> = [];
-
-  // Build all chunks up front so we can pipeline them.
-  const chunks: bigint[][] = [];
-  for (let i = 0; i < tokenIds.length; i += URI_BATCH_SIZE) {
-    chunks.push(tokenIds.slice(i, i + URI_BATCH_SIZE));
-  }
-
-  for (let wave = 0; wave < chunks.length; wave += URI_BATCH_PARALLELISM) {
-    if (params.cancelled()) return null;
-    const slice = chunks.slice(wave, wave + URI_BATCH_PARALLELISM);
-    const waveResults = await Promise.all(
-      slice.map(async (chunk, chunkIdxInWave) => {
-        const calls: MulticallRequest[] = chunk.map((id) =>
-          encodeCall(contractLower as `0x${string}`, TOKEN_URI_ABI, "tokenURI", [id]),
-        );
-        try {
-          const results = await executeBatchedMulticalls(pool, calls);
-          return { chunk, flat: results.flat(), chunkIdxInWave };
-        } catch {
-          return { chunk, flat: [], chunkIdxInWave };
-        }
-      }),
-    );
-    for (const { chunk, flat, chunkIdxInWave } of waveResults) {
-      const absoluteChunkIdx = wave + chunkIdxInWave;
-      for (let j = 0; j < chunk.length; j++) {
-        const entry = flat[j];
-        if (!entry || !entry.success) continue;
-        const uri = decodeResult<string>(TOKEN_URI_ABI, "tokenURI", entry);
-        if (uri) {
-          const tokenIdStr = chunk[j].toString();
-          uriByTokenId.set(tokenIdStr, uri);
-          // Sample the first chunk's first 5 tokens for reveal verification.
-          if (sampledForReveal.length < 5 && absoluteChunkIdx === 0 && j < 5) {
-            sampledForReveal.push({ tokenId: tokenIdStr, uri });
-          }
-        }
-      }
-    }
-  }
-
-  // Step B: parallel JSON fetches for each URI, with concurrency
-  // cap. Tracks consecutive failures from the same host - once we
-  // hit JSON_FAILURE_BAIL in a row, the host is almost certainly
-  // CORS-blocking us and continuing just spams the console for the
-  // rest of the supply. Stop the JSON stage there (we still keep
-  // the URIs we collected and complete enumeration with whatever
-  // partial attributes we got).
-  const tokenAttributes: Record<string, TokenAttribute[]> = {};
-  const entries = Array.from(uriByTokenId.entries());
-  let fetchedCount = 0;
-  let consecutiveFailures = 0;
-  let bailed = false;
-
-  for (let i = 0; i < entries.length; i += JSON_CONCURRENCY) {
-    if (params.cancelled()) return null;
-    if (bailed) break;
-    const wave = entries.slice(i, i + JSON_CONCURRENCY);
-    await Promise.all(
-      wave.map(async ([tokenIdStr, uri]) => {
-        try {
-          const meta = await resolveMetadata(uri, BigInt(tokenIdStr));
-          consecutiveFailures = 0;
-          if (Array.isArray(meta.attributes) && meta.attributes.length > 0) {
-            tokenAttributes[tokenIdStr] = (
-              meta.attributes as Array<{ trait_type?: string; value?: unknown }>
-            )
-              .filter(
-                (a) => a && typeof a.trait_type === "string" && a.value != null,
-              )
-              .map((a) => ({
-                trait_type: a.trait_type as string,
-                value: String(a.value),
-              }));
-          }
-        } catch {
-          consecutiveFailures++;
-        }
-      }),
-    );
-    fetchedCount += wave.length;
-    params.onProgress(Math.min(fetchedCount, totalSupply));
-    if (consecutiveFailures >= JSON_FAILURE_BAIL) {
-      bailed = true;
-    }
-  }
-
-  // Step C: aggregate counts.
-  const traitCounts: Record<string, Record<string, number>> = {};
-  for (const attrs of Object.values(tokenAttributes)) {
-    for (const a of attrs) {
-      if (!traitCounts[a.trait_type]) traitCounts[a.trait_type] = {};
-      traitCounts[a.trait_type][a.value] =
-        (traitCounts[a.trait_type][a.value] ?? 0) + 1;
-    }
-  }
-
-  // Detect "all identical": every token has the same attributes set.
-  // Cheap heuristic: every trait value has count === totalSupply.
-  let allIdentical = Object.keys(tokenAttributes).length > 1;
-  for (const type of Object.keys(traitCounts)) {
-    const counts = Object.values(traitCounts[type]);
-    if (counts.length !== 1 || counts[0] < Object.keys(tokenAttributes).length) {
-      allIdentical = false;
-      break;
-    }
-  }
-
-  // Step D: per-token rarity score and rank.
-  // score = sum(supply / count) for each trait. Higher = rarer.
-  const enumeratedSupply = Object.keys(tokenAttributes).length || totalSupply;
-  const rarityScores: Record<string, number> = {};
-  for (const [tokenIdStr, attrs] of Object.entries(tokenAttributes)) {
-    let score = 0;
-    for (const a of attrs) {
-      const count = traitCounts[a.trait_type]?.[a.value] ?? 1;
-      score += enumeratedSupply / count;
-    }
-    rarityScores[tokenIdStr] = score;
-  }
-
-  // 1-based rank by descending score.
-  const sorted = Object.entries(rarityScores).sort((a, b) => b[1] - a[1]);
-  const rarityRanks: Record<string, number> = {};
-  sorted.forEach(([id], idx) => {
-    rarityRanks[id] = idx + 1;
-  });
-
-  const result: CachedTraitData = {
-    contract: contractLower,
-    chainId,
-    enumeratedAt: Date.now(),
-    status: allIdentical ? "all_identical" : "complete",
-    totalSupply,
-    sampledTokenURIs: sampledForReveal,
-    traitCounts,
-    tokenAttributes,
-    rarityScores,
-    rarityRanks,
-  };
-  return result;
 }
 
 function shuffle<T>(arr: T[]): T[] {

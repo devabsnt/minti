@@ -12,6 +12,15 @@ import { createPublicClient, fallback, http, type PublicClient } from "viem";
 import { DEFAULT_RPCS, getChainById } from "@/config/chains";
 import { RPC_POOLS } from "@/lib/rpcPool";
 
+// Module-scope client cache. Each `(chainId, userRpc)` tuple maps to a
+// single PublicClient. Re-using the client across hooks means viem's
+// `batch.multicall` actually batches across them — without the cache,
+// 24 NftCards mounting would each create their own client and the 50ms
+// batch window would batch one call per client (defeating the purpose).
+// It also lets viem's fallback `rank` accumulate observed-latency state
+// across all callers instead of starting fresh each time.
+const clientCache = new Map<string, PublicClient>();
+
 const RPC_STORAGE_KEY = "minti_rpc_overrides";
 
 interface RpcOverrides {
@@ -77,30 +86,29 @@ export function RpcProvider({ children }: { children: ReactNode }) {
 
   const getPublicClient = useCallback(
     (chainId: number): PublicClient => {
-      const chain = getChainById(chainId);
       const userRpc = getEffectiveRpc(chainId);
+      const cacheKey = `${chainId}:${userRpc}`;
+      const cached = clientCache.get(cacheKey);
+      if (cached) return cached;
 
+      const chain = getChainById(chainId);
       // Build a fallback transport over EVERY RPC in the pool, not the
-      // single DEFAULT_RPC. Otherwise every parallel useNftMetadata call
-      // hammers one URL and gets 429'd. viem's fallback transport tries
-      // each in order, advancing on any error (including rate-limit),
-      // and re-ranks them periodically by latency.
-      //
-      // We also shuffle the starting index so concurrent client creations
-      // don't all begin with the same RPC — that turns N cards mounting
-      // at once into a natural round-robin instead of a thundering herd.
+      // single DEFAULT_RPC. viem's fallback transport tries each in
+      // order, advances on errors (including rate-limit), and re-ranks
+      // them periodically by latency — that ranking is what we want to
+      // amortize across calls, hence the module-scope cache above.
+      // No per-call shuffle: `rank` learns which RPC is healthiest on
+      // its own, and shuffling would discard that signal each call.
       const poolUrls = RPC_POOLS[chainId] ?? [];
       const merged = userRpc && !poolUrls.includes(userRpc)
         ? [userRpc, ...poolUrls]
         : (poolUrls.length > 0 ? poolUrls : [userRpc].filter(Boolean));
-      const start = Math.floor(Math.random() * merged.length);
-      const ordered = [...merged.slice(start), ...merged.slice(0, start)];
 
-      const transports = ordered.map((url) =>
+      const transports = merged.map((url) =>
         http(url, { retryCount: 1, retryDelay: 250 }),
       );
 
-      return createPublicClient({
+      const client = createPublicClient({
         chain,
         transport: fallback(transports, { rank: { interval: 30_000 } }),
         batch: {
@@ -110,6 +118,8 @@ export function RpcProvider({ children }: { children: ReactNode }) {
           },
         },
       });
+      clientCache.set(cacheKey, client);
+      return client;
     },
     [getEffectiveRpc]
   );

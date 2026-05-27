@@ -37,13 +37,52 @@ export interface CollectionToken {
 const BROWSE_PAGE_SIZE = 24;
 
 /**
+ * Cheap standalone totalSupply lookup. One multicall, long staleTime —
+ * cached aggressively so callers that just need supply (synthetic
+ * browse, trait enumeration) don't trigger the per-page ownerOf scan.
+ */
+export function useCollectionTotalSupply(
+  collectionAddress: `0x${string}` | undefined,
+) {
+  const { browseChainId } = useBrowseChain();
+  const { getEffectiveRpc } = useRpc();
+  return useQuery({
+    queryKey: ["collection-total-supply", browseChainId, collectionAddress],
+    queryFn: async (): Promise<number> => {
+      const pool = createRpcPool(browseChainId, getEffectiveRpc(browseChainId));
+      const calls: MulticallRequest[] = [
+        encodeCall(collectionAddress!, ERC721_ABI, "totalSupply", []),
+      ];
+      const results = await executeBatchedMulticalls(pool, calls);
+      const flat = results.flat();
+      const supply = flat[0]
+        ? decodeResult<bigint>(ERC721_ABI, "totalSupply", flat[0])
+        : null;
+      return supply ? Number(supply) : 0;
+    },
+    enabled: !!collectionAddress,
+    staleTime: 60_000,
+  });
+}
+
+/**
  * Browse a collection by paginating through token IDs.
  * Fetches ownerOf for each ID via Multicall3 to verify it exists and get the owner.
+ *
+ * `options.scanEnabled` defaults to true. Pass `false` to opt out of the
+ * per-page ownerOf scan while keeping the cheap `totalSupply` query —
+ * useful when a synthetic browse path (placeholder owners + templated
+ * thumbnails) can serve the grid without confirming ownership of every
+ * tile. The brute scan eats RPC quota that should go to the wallet
+ * scan on fresh collections, so callers that already know totalSupply
+ * from another source should skip it.
  */
 export function useCollectionTokens(
   collectionAddress: `0x${string}` | undefined,
-  page: number
+  page: number,
+  options?: { scanEnabled?: boolean },
 ) {
+  const scanEnabled = options?.scanEnabled ?? true;
   const { browseChainId } = useBrowseChain();
   const { getEffectiveRpc } = useRpc();
 
@@ -100,7 +139,7 @@ export function useCollectionTokens(
 
       return tokens;
     },
-    enabled: !!collectionAddress && totalSupply > 0,
+    enabled: !!collectionAddress && totalSupply > 0 && scanEnabled,
     staleTime: 30_000,
   });
 

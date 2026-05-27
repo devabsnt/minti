@@ -1,12 +1,11 @@
 "use client";
 
 import Link from "next/link";
-import { useState, type MouseEvent } from "react";
+import { type MouseEvent } from "react";
 import { NftImage } from "./NftImage";
 import { formatPrice, truncateAddress } from "@/lib/format";
 import type { NftMetadata } from "@/types/nft";
 import { useBrowseChain } from "@/providers/ChainProvider";
-import { useNftMetadata } from "@/hooks/useNftMetadata";
 import { getNativeSymbol } from "@/config/chains";
 import {
   usePageTurnSound,
@@ -38,20 +37,13 @@ export function NftCard({
 }: NftCardProps) {
   const { browseChainId } = useBrowseChain();
   const symbol = getNativeSymbol(browseChainId);
-  // Lazy real-metadata fallback. Stays disabled until the primary image
-  // signals total failure. Covers the case where a collection's image
-  // template has one extension baked in (`.png`) but some tokens are
-  // a different format (`.gif`, `.mp4`) — fetching tokenURI gets us the
-  // authoritative URL straight from the contract. Cards that load on
-  // the first try pay nothing.
-  const [primaryFailed, setPrimaryFailed] = useState(false);
-  const { data: fetchedMetadata } = useNftMetadata(
-    primaryFailed ? (contractAddress as `0x${string}`) : undefined,
-    primaryFailed ? BigInt(tokenId) : undefined,
-  );
-  const effectiveMetadata =
-    primaryFailed && fetchedMetadata ? fetchedMetadata : metadata;
-  const showingFallback = primaryFailed && !!fetchedMetadata;
+  // Image fallbacks are now handled entirely inside NftImage: extension
+  // probing + IPFS gateway laddering covers the recoverable cases. A
+  // total NftImage failure means the metadata's image URL itself is
+  // dead, and re-fetching the same metadata wouldn't help — it would
+  // just hand back the same dead URL. The old metadata-retry path here
+  // doubled RPC pressure on collections that were already failing.
+  const effectiveMetadata = metadata;
   const playPageTurn = usePageTurnSound();
   const playPaperHover = usePaperHoverSound();
   const handleClick = (e: MouseEvent<HTMLAnchorElement>) => {
@@ -71,14 +63,10 @@ export function NftCard({
       className="stamp-shadow group block border border-border overflow-hidden bg-background-secondary hover:border-border-hover transition-colors"
     >
       <NftImage
-        // Force remount when we swap from synthesized to fetched URL so
-        // gateway state / "all failed" placeholder resets cleanly.
-        key={showingFallback ? "fallback" : "primary"}
         src={effectiveMetadata?.image || ""}
         rawUri={effectiveMetadata?.rawImageUri}
         alt={effectiveMetadata?.name || `Token #${tokenId}`}
         className="aspect-square"
-        onAllFailed={primaryFailed ? undefined : () => setPrimaryFailed(true)}
       />
 
       <div className="p-4 space-y-2">

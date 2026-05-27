@@ -8,7 +8,10 @@ import { useCollectionListings } from "@/hooks/useListings";
 import { useCollectionBids, useCollectionOffers } from "@/hooks/useBids";
 import { useCollectionNfts } from "@/hooks/useWalletNfts";
 import { useCollectionInfo } from "@/hooks/useCollectionInfo";
-import { useCollectionTokens } from "@/hooks/useCollectionTokens";
+import {
+  useCollectionTokens,
+  useCollectionTotalSupply,
+} from "@/hooks/useCollectionTokens";
 import { useCollectionTokensByIds } from "@/hooks/useCollectionTokensByIds";
 import { useNftMetadata, useBatchNftMetadata } from "@/hooks/useNftMetadata";
 import {
@@ -317,7 +320,21 @@ function CollectionPage({
   // we never use — the "cancelled JSON requests" that were slowing down
   // CrazyOctogon-style large collections.
   const indexerHasTokens = indexerBrowseTokens.length > 0 || indexerBrowseTotal > 0;
+  // Pull totalSupply standalone — one cached multicall — so we can
+  // decide whether synthetic browse can serve the grid BEFORE deciding
+  // whether the legacy per-page ownerOf scan is needed.
+  const standaloneSupplyQuery = useCollectionTotalSupply(
+    indexerTotalSupply === 0 ? collectionAddress : undefined,
+  );
+  const standaloneSupply = standaloneSupplyQuery.data ?? 0;
+  const knownTotalSupply = indexerTotalSupply || standaloneSupply;
+  // Synthetic browse can fire as soon as we know supply from ANY source
+  // (indexer row, on-chain reader). The ownerOf brute scan only runs in
+  // the genuine unknown case — `useCollectionTokens` with `scanEnabled:
+  // false` returns the totalSupply but skips the per-page ownerOf
+  // multicall, saving ~24 calls per page on a fresh collection.
   const fallbackEnabled = filteredIds === null && !indexerHasTokens;
+  const scanWouldBeWasted = filteredIds === null && knownTotalSupply > 0;
   const {
     tokens: defaultBrowseTokens,
     totalSupply: contractTotalSupply,
@@ -326,8 +343,9 @@ function CollectionPage({
   } = useCollectionTokens(
     fallbackEnabled ? collectionAddress : undefined,
     filteredIds !== null ? 0 : browsePage,
+    { scanEnabled: !scanWouldBeWasted },
   );
-  const totalSupply = indexerTotalSupply || contractTotalSupply;
+  const totalSupply = knownTotalSupply || contractTotalSupply;
 
   const imageUrlTemplate = indexerCollection?.imageUrlTemplate ?? null;
   const sampleImageUrl = indexerCollection?.sampleImageUrl ?? null;

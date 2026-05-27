@@ -28,6 +28,9 @@ export interface WalletNftsResult {
   scannedBlocks: number;
   isBackScanning: boolean;
   backwardProgress: number;
+  /** Non-zero while the Hypersync proxy is rate-limited — UI can
+   *  surface a "scanner busy" pill so the wait doesn't look broken. */
+  retryAfterSeconds: number;
 }
 
 export interface CollectionNftsResult {
@@ -106,6 +109,7 @@ export function useWalletNfts(
       scannedBlocks: scanResult.scannedBlocks,
       isBackScanning: scanResult.isBackScanning,
       backwardProgress: scanResult.backwardProgress,
+      retryAfterSeconds: scanResult.retryAfterSeconds ?? 0,
     };
   }, [trackedTokens, scanResult, trackedLoading, trackedError]);
 }

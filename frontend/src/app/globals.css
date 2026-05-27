@@ -312,7 +312,18 @@ body > * {
   position: fixed;
   inset: 0;
   pointer-events: none;
-  z-index: 5;
+  /* Above header (z-50) and modals (z-50). Toast container stays
+     above us at z-100, and trait dropdowns when open render at z-95
+     so their checkboxes stay clickable above the bamboo set dressing. */
+  z-index: 90;
+}
+/* Mobile: drop the bamboo entirely. The bushels eat horizontal margin
+   that the gallery + topbar need on small viewports, and the leaves
+   end up sitting over wallet/listing controls on narrow screens. */
+@media (max-width: 767px) {
+  .corner-bamboo {
+    display: none;
+  }
 }
 .corner-bamboo-side {
   position: absolute;

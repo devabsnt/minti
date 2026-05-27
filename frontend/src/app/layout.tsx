@@ -110,8 +110,11 @@ export default function RootLayout({
         <link rel="dns-prefetch" href="https://ipfs-cache.devskibb.workers.dev" />
         <link rel="dns-prefetch" href="https://ipfs.io" />
         <link rel="dns-prefetch" href="https://dweb.link" />
-        <link rel="dns-prefetch" href="https://4everland.io" />
         <link rel="dns-prefetch" href="https://w3s.link" />
+        {/* arweave.net is hit by every ar:// metadata fetch */}
+        <link rel="dns-prefetch" href="https://arweave.net" />
+        {/* wallet scan path (Hypersync proxy) */}
+        <link rel="dns-prefetch" href="https://monad-hypersync-proxy.devskibb.workers.dev" />
       </head>
       <body
         className={`${geistSans.variable} ${geistMono.variable} ${fraunces.variable} antialiased min-h-screen flex flex-col`}

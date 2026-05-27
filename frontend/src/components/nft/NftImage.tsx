@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback, useEffect } from "react";
+import { useState, useCallback, useEffect, useRef } from "react";
 import { IPFS_GATEWAYS } from "@/config/constants";
 import { resolveUri, toCanonicalIpfsUri } from "@/lib/metadata";
 
@@ -150,6 +150,11 @@ export function NftImage({
   const [gatewayIdx, setGatewayIdx] = useState(0);
   const [allFailed, setAllFailed] = useState(false);
   const [loaded, setLoaded] = useState(false);
+  // Wall-clock at first mount — drives the global ceiling watchdog so
+  // a token whose gateways all hang doesn't keep extending its deadline
+  // each time the per-gateway watchdog advances the ladder. Set inside
+  // the watchdog effect itself the first time it runs (lazy seed).
+  const mountedAtRef = useRef<number>(0);
 
   // If rawUri isn't already ipfs://, try to extract a CID from src so we
   // can still step across gateways when the JSON hardcoded a gateway URL.
@@ -179,19 +184,39 @@ export function NftImage({
     currentSrc = rewriteIpfsUrl(src);
   }
 
-  // Watchdog: if neither `onLoad` nor `onError` fires within 12 seconds,
-  // assume the gateway has hung the connection (common with dead IPFS
-  // gateways — TCP accepted, no bytes back). Force the error path so
-  // the gateway-fallback ladder advances. Without this, the card stays
-  // in its loading shimmer forever — the failure mode the user noted
-  // where images don't display but no CORS / 4xx ever logs.
+  // Per-gateway watchdog (6s) and a global 15s ceiling. Without the
+  // ceiling, a token whose every gateway TCP-hangs would burn a fresh
+  // watchdog window for each — 3 gateways × 12s = 36s of spinner
+  // before a placeholder. With the ceiling, the worst case is 15s.
+  // Hard placeholder after that beats a stalled UI.
   useEffect(() => {
     if (loaded || allFailed) return;
-    const timer = setTimeout(() => {
+    if (mountedAtRef.current === 0) mountedAtRef.current = Date.now();
+    const PER_GATEWAY_MS = 6_000;
+    const GLOBAL_CEILING_MS = 15_000;
+    const elapsed = Date.now() - mountedAtRef.current;
+    const remainingCeiling = Math.max(0, GLOBAL_CEILING_MS - elapsed);
+    const perGateway = setTimeout(() => {
       if (!loaded) handleError();
-    }, 12_000);
-    return () => clearTimeout(timer);
-  }, [loaded, allFailed, currentSrc, handleError]);
+    }, PER_GATEWAY_MS);
+    // remainingCeiling can be 0 when a parent rerender remounts the
+    // effect after the global window has already elapsed. Schedule a
+    // microtask in that case so we don't synchronously setState during
+    // the effect body.
+    const global = setTimeout(
+      () => {
+        if (!loaded) {
+          setAllFailed(true);
+          onAllFailed?.();
+        }
+      },
+      remainingCeiling > 0 ? remainingCeiling : 0,
+    );
+    return () => {
+      clearTimeout(perGateway);
+      clearTimeout(global);
+    };
+  }, [loaded, allFailed, currentSrc, handleError, onAllFailed]);
 
   if (!src || allFailed) {
     return (
@@ -250,7 +275,7 @@ export function NftImage({
           title={alt}
           sandbox="allow-scripts"
           loading={priority ? "eager" : "lazy"}
-          referrerPolicy="no-referrer"
+          referrerPolicy="origin"
           className={`w-full h-full border-0 transition-opacity duration-300 ${loaded ? "opacity-100" : "opacity-0"}`}
           onLoad={() => setLoaded(true)}
           onError={handleError}
@@ -265,7 +290,7 @@ export function NftImage({
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           {...({ fetchpriority: priority ? "high" : "auto" } as any)}
           decoding="async"
-          referrerPolicy="no-referrer"
+          referrerPolicy="origin"
           className={`w-full h-full object-cover transition-opacity duration-300 ${loaded ? "opacity-100" : "opacity-0"}`}
           onLoad={() => setLoaded(true)}
           onError={handleError}

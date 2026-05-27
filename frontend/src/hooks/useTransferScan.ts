@@ -134,6 +134,10 @@ export interface TransferScanResult {
   isLoading: boolean;
   isBackScanning: boolean;
   backwardProgress: number;
+  /** Seconds until the public Hypersync scanner is expected to free
+   *  up. Non-zero only while a 429 backoff is active. UI can surface
+   *  a "scanner busy" pill instead of looking stuck. */
+  retryAfterSeconds?: number;
 }
 
 // ────────────────────── Bidirectional Cache ──────────────────────
