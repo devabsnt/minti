@@ -19,28 +19,25 @@ import {
   type TokenAttribute,
 } from "@/lib/traitsCache";
 import { runFillLoop } from "@/lib/traitFillLoop";
-import { getDeadHosts } from "@/lib/proxyRouter";
-import type { WorkerOutMessage } from "@/lib/workers/traitEnumeration.worker";
 
 /**
- * Client-side trait enumeration that gap-fills the metadata cache and
- * runs the heavy work in a Web Worker so the main thread stays
- * interactive while large collections enumerate.
+ * Client-side trait enumeration that gap-fills the metadata cache.
  *
  * Flow:
  *   1. Seed state from `getAggregateForCollection` — topbar filter is
  *      usable immediately, even with partial data.
  *   2. Verify cached samples haven't shifted (reveal detection runs on
  *      the main thread because it needs the shared RPC pool state).
- *   3. Spawn a worker that runs `runFillLoop` — multicall encoding,
- *      JSON fetching, attribute aggregation, and IndexedDB writes all
- *      happen off the main thread.
- *   4. On each progress message, re-read the aggregate from IndexedDB
- *      and publish it to React state.
- *   5. On unmount or dep change, cancel + terminate the worker.
+ *   3. Run `runFillLoop` — multicall encoding (when no indexer
+ *      template is available), JSON fetching, attribute aggregation,
+ *      and IndexedDB writes. Progress is reported after each wave.
  *
- * If the browser can't spawn a worker (SSR, unusual config), the fill
- * loop runs inline on the main thread — same code path either way.
+ * The audit's §6 suggested a Web Worker for this loop. That refactor
+ * proved flaky under Vercel's bundling — workers spawned but silently
+ * failed in production, leaving the topbar stuck at 0%. JSON parsing
+ * for ~30 parallel fetches is tiny relative to the network time, so
+ * main-thread is acceptable. If we revisit worker offloading, do it
+ * with a working e2e test first.
  *
  * Pass `enabled: false` to skip enumeration (EVMFS manifest path).
  */
@@ -101,7 +98,6 @@ export function useTraitEnumeration(
   const [state, setState] = useState<EnumerationState>(INITIAL_STATE);
   const cancelRef = useRef(false);
   const runIdRef = useRef(0);
-  const workerRef = useRef<Worker | null>(null);
 
   useEffect(() => {
     if (!enabled) return;
@@ -183,11 +179,6 @@ export function useTraitEnumeration(
       );
 
       const seenIds = aggregateTokenIds(aggregate);
-
-      // 2. Run the fill loop. Prefer a Web Worker so multicall encoding
-      //    + JSON parsing don't block paint on big collections. Fall
-      //    back to inline execution if worker construction fails (SSR,
-      //    blocked by CSP, unusual config).
       setState((s) => ({ ...s, status: "enumerating" }));
 
       // Helper: re-read aggregate and publish to React state.
@@ -205,111 +196,49 @@ export function useTraitEnumeration(
         setState(partialState(progress, enumeratedCount, fresh));
       };
 
-      // Helper: finalize and publish terminal state.
-      const publishFinal = async () => {
-        const finalAgg = await getAggregateForCollection(
-          browseChainId,
-          contractLower,
-        );
-        if (myRunId !== runIdRef.current || !finalAgg) return;
-        const enumeratedCount = Object.keys(finalAgg.tokenAttributes).length;
-        const finalProgress =
-          totalSupply! > 0 ? Math.min(1, enumeratedCount / totalSupply!) : 0;
-        setState({
-          status:
-            finalAgg.status === "all_identical"
-              ? "all_identical"
-              : finalAgg.status === "complete"
-                ? "complete"
-                : finalAgg.status === "failed"
-                  ? "failed"
-                  : "partial",
-          progress: finalProgress,
-          enumeratedCount,
-          totalSupply: finalAgg.totalSupply,
-          traitCounts: finalAgg.traitCounts,
-          tokenAttributes: finalAgg.tokenAttributes,
-          rarityScores: finalAgg.rarityScores,
-          rarityRanks: finalAgg.rarityRanks,
-        });
-      };
+      // 2. Run the fill loop inline. JSON parsing for ~30 parallel
+      //    fetches doesn't move the needle on main-thread perf; the
+      //    network round-trip is the bottleneck.
+      await runFillLoop({
+        contract: contractLower,
+        chainId: browseChainId,
+        totalSupply: totalSupply!,
+        tokenIdStart,
+        userRpc,
+        seenTokenIds: seenIds,
+        indexerTemplate,
+        onProgress: () => {
+          void publishProgress();
+        },
+        cancelled: () => cancelRef.current || myRunId !== runIdRef.current,
+      });
 
-      const worker = spawnWorker();
-      if (worker) {
-        workerRef.current?.terminate();
-        workerRef.current = worker;
-
-        await new Promise<void>((resolve) => {
-          worker.onmessage = async (event: MessageEvent<WorkerOutMessage>) => {
-            const msg = event.data;
-            if (msg.runId !== myRunId) return;
-            if (msg.type === "progress") {
-              await publishProgress();
-            } else if (msg.type === "done" || msg.type === "error") {
-              if (
-                msg.type === "error" &&
-                process.env.NODE_ENV !== "production"
-              ) {
-                console.warn(
-                  "[useTraitEnumeration] worker reported error:",
-                  msg.message,
-                );
-              }
-              await publishFinal();
-              worker.terminate();
-              if (workerRef.current === worker) workerRef.current = null;
-              resolve();
-            }
-          };
-          worker.onerror = (err) => {
-            if (process.env.NODE_ENV !== "production") {
-              console.warn(
-                "[useTraitEnumeration] worker errored, falling back to inline:",
-                err.message,
-              );
-            }
-            worker.terminate();
-            if (workerRef.current === worker) workerRef.current = null;
-            resolve();
-          };
-          worker.onmessageerror = (err) => {
-            if (process.env.NODE_ENV !== "production") {
-              console.warn("[useTraitEnumeration] worker message error:", err);
-            }
-          };
-          worker.postMessage({
-            type: "start",
-            runId: myRunId,
-            payload: {
-              contract: contractLower,
-              chainId: browseChainId,
-              totalSupply: totalSupply!,
-              tokenIdStart,
-              userRpc,
-              seenTokenIds: Array.from(seenIds),
-              indexerTemplate,
-              deadHosts: getDeadHosts(),
-            },
-          });
-        });
-      } else {
-        // Worker unavailable — run inline. Same code path; main thread
-        // pays the cost.
-        await runFillLoop({
-          contract: contractLower,
-          chainId: browseChainId,
-          totalSupply: totalSupply!,
-          tokenIdStart,
-          userRpc,
-          seenTokenIds: seenIds,
-          indexerTemplate,
-          onProgress: () => {
-            void publishProgress();
-          },
-          cancelled: () => cancelRef.current || myRunId !== runIdRef.current,
-        });
-        await publishFinal();
-      }
+      // 3. Publish terminal state.
+      const finalAgg = await getAggregateForCollection(
+        browseChainId,
+        contractLower,
+      );
+      if (myRunId !== runIdRef.current || !finalAgg) return;
+      const finalCount = Object.keys(finalAgg.tokenAttributes).length;
+      const finalProgress =
+        totalSupply! > 0 ? Math.min(1, finalCount / totalSupply!) : 0;
+      setState({
+        status:
+          finalAgg.status === "all_identical"
+            ? "all_identical"
+            : finalAgg.status === "complete"
+              ? "complete"
+              : finalAgg.status === "failed"
+                ? "failed"
+                : "partial",
+        progress: finalProgress,
+        enumeratedCount: finalCount,
+        totalSupply: finalAgg.totalSupply,
+        traitCounts: finalAgg.traitCounts,
+        tokenAttributes: finalAgg.tokenAttributes,
+        rarityScores: finalAgg.rarityScores,
+        rarityRanks: finalAgg.rarityRanks,
+      });
     }
 
     run().catch((err) => {
@@ -326,12 +255,6 @@ export function useTraitEnumeration(
 
     return () => {
       cancelRef.current = true;
-      const worker = workerRef.current;
-      if (worker) {
-        worker.postMessage({ type: "cancel", runId: myRunId });
-        worker.terminate();
-        workerRef.current = null;
-      }
     };
     // getEffectiveRpc identity changes only when the RPC pool changes,
     // not per render. browseChainId / contract / totalSupply drive work.
@@ -346,37 +269,6 @@ export function useTraitEnumeration(
   ]);
 
   return state;
-}
-
-// ── Worker construction ─────────────────────────────────────────
-
-/**
- * Spawn the trait enumeration worker. Returns null in environments
- * where Web Workers aren't available (SSR, CSP, very old browsers).
- * Caller falls back to inline execution in that case.
- */
-function spawnWorker(): Worker | null {
-  if (typeof window === "undefined") return null;
-  if (typeof Worker === "undefined") return null;
-  try {
-    // IMPORTANT: must be a literal relative path. Turbopack / webpack
-    // detect `new URL("./...", import.meta.url)` syntax at build time
-    // to bundle the worker chunk. The `@/` alias is not parsed in this
-    // context — it silently produces a URL pointing at the literal
-    // string and the Worker construction either fails or loads nothing.
-    return new Worker(
-      new URL(
-        "../lib/workers/traitEnumeration.worker.ts",
-        import.meta.url,
-      ),
-      { type: "module" },
-    );
-  } catch (err) {
-    if (process.env.NODE_ENV !== "production") {
-      console.warn("[useTraitEnumeration] worker spawn failed:", err);
-    }
-    return null;
-  }
 }
 
 // ── Helpers ─────────────────────────────────────────────────────
