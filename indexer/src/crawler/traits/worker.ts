@@ -287,36 +287,106 @@ async function fetchTokenAttributes(
   });
 }
 
+/**
+ * Multicall `tokenURI(id)` (or `uri(id)` for ERC-1155) for a batch of
+ * tokenIds. Used as the fallback when no `{id}`-templatable URI can be
+ * derived from the indexer's stored sample — covers:
+ *
+ *   - On-chain `data:application/json` URIs that bake unique attributes
+ *     per token (Monad Mogs, NFTs2Me, etc.)
+ *   - Per-token content-addressed CIDs (each token has its own pin)
+ *   - Off-chain APIs that don't follow a numeric `/N.json` pattern
+ *
+ * Returns a Map with `null` for tokens whose tokenURI call reverted. We
+ * tolerate per-token failures so a single missing token doesn't kill
+ * the batch.
+ */
+async function multicallTokenURIs(
+  client: PublicClient,
+  contract: string,
+  is1155: boolean,
+  tokenIds: bigint[],
+): Promise<Map<string, string | null>> {
+  const fnName = is1155 ? ("uri" as const) : ("tokenURI" as const);
+  const out = new Map<string, string | null>();
+  // 50 calls per multicall batch — matches Monad's per-eth_call gas
+  // budget per the existing rpcPool config. Larger batches occasionally
+  // hit the cap.
+  const BATCH = 50;
+  for (let i = 0; i < tokenIds.length; i += BATCH) {
+    const batch = tokenIds.slice(i, i + BATCH);
+    const contracts = batch.map((id) => ({
+      address: contract as `0x${string}`,
+      abi: ABI,
+      functionName: fnName,
+      args: [id] as const,
+    }));
+    try {
+      const results = await client.multicall({
+        contracts,
+        multicallAddress: MULTICALL3_ADDRESS,
+        allowFailure: true,
+      });
+      for (let j = 0; j < batch.length; j++) {
+        const r = results[j];
+        const idStr = batch[j]!.toString();
+        if (r?.status === "success" && typeof r.result === "string" && r.result.length > 0) {
+          out.set(idStr, r.result);
+        } else {
+          out.set(idStr, null);
+        }
+      }
+    } catch {
+      // Entire batch failed — record nulls and move on. The per-token
+      // failure budget in the outer enumeration will bail us cleanly
+      // if everything in this batch comes back null.
+      for (const id of batch) out.set(id.toString(), null);
+    }
+  }
+  return out;
+}
+
+/** Per-collection terminal outcome — used by the worker loop to log
+ *  meaningfully instead of always saying "done". `retryMinutes` is set
+ *  on failed / partial outcomes to surface backoff timing in the log. */
+type EnumerationOutcome =
+  | { status: "complete"; tokens: number }
+  | { status: "all_identical"; tokens: number }
+  | { status: "failed"; reason: string; retryMinutes?: number }
+  | { status: "partial"; tokens: number; reason: string; retryMinutes?: number };
+
 async function enumerateCollection(
   client: PublicClient,
   row: CandidateRow,
-): Promise<void> {
+): Promise<EnumerationOutcome> {
   const contract = row.contract;
   // Hard pre-conditions.
   const supplyNum = row.totalSupply ? Number(row.totalSupply) : 0;
   if (!supplyNum || supplyNum <= 0 || supplyNum > 1_000_000) {
-    await markFailed(contract, row, `invalid totalSupply: ${row.totalSupply}`);
-    return;
+    const reason = `invalid totalSupply: ${row.totalSupply}`;
+    const retryMinutes = await markFailed(contract, row, reason);
+    return { status: "failed", reason, retryMinutes };
   }
   if (!row.tokenUriTemplate) {
-    await markFailed(contract, row, "no tokenUriTemplate");
-    return;
+    const reason = "no tokenUriTemplate";
+    const retryMinutes = await markFailed(contract, row, reason);
+    return { status: "failed", reason, retryMinutes };
   }
 
-  // Derive an `{id}`-substitutable template. If the stored URI doesn't
-  // template cleanly, we'd need per-token multicalls — abort for now
-  // and let a future enhancement add that fallback.
+  // Two URI-resolution modes:
+  //   (A) Template path — derive a `{id}`-substitutable string from the
+  //       stored sample URI and expand client-side. Free, no chain reads.
+  //   (B) Multicall path — call tokenURI(id) for every token. Necessary
+  //       for on-chain data: URIs (each token has unique embedded JSON),
+  //       per-token content-addressed CIDs, and off-chain APIs that
+  //       don't follow a numeric `/N.json` shape.
+  //
+  // We don't try to detect (B) heuristically; if (A) doesn't yield a
+  // template, we just fall through to (B). The multicall path is slower
+  // (~1 round-trip per 50 tokens) but covers the long tail.
   const template = row.tokenUriTemplate.includes("{id}")
     ? row.tokenUriTemplate
     : buildTemplateFromReference(row.tokenUriTemplate, 1n);
-  if (!template) {
-    await markFailed(
-      contract,
-      row,
-      "tokenUriTemplate doesn't contain a substitutable id slot",
-    );
-    return;
-  }
 
   const builder = ManifestBuilder.fromJson(row.storedManifest);
   // Resume point. tokenIdStart defaults to 1 unless the contract is
@@ -338,16 +408,30 @@ async function enumerateCollection(
   const todo = ids.filter((id) => !builder.has(id.toString()));
   if (todo.length === 0) {
     await markComplete(contract, row, builder, supplyNum);
-    return;
+    return {
+      status: builder.isMostlyIdentical() ? "all_identical" : "complete",
+      tokens: builder.size(),
+    };
   }
 
-  // Decide whether to flag this collection identical-only. We need at
-  // least a few hundred enumerated tokens before this signal is robust.
+  // Resolve URIs for every todo token up front. For the template path
+  // this is just string substitution. For the multicall path we batch
+  // chain reads in chunks of 50 — slower but works for any contract.
+  let uriByTokenId: Map<string, string | null>;
+  if (template) {
+    uriByTokenId = new Map();
+    for (const id of todo) {
+      uriByTokenId.set(id.toString(), expandIdTemplate(template, id));
+    }
+  } else {
+    console.log(`[traits] ${contract}: no URI template — multicalling tokenURI for ${todo.length} tokens`);
+    uriByTokenId = await multicallTokenURIs(client, contract, row.is1155, todo);
+  }
+
   let consecutiveFailures = 0;
   let lastChunkCheckpointId: bigint | null = row.lastEnumeratedTokenId
     ? BigInt(row.lastEnumeratedTokenId)
     : null;
-  let lastSavedAt = Date.now();
 
   // Worker pool. Each worker pulls the next tokenId, fetches, merges.
   let cursor = 0;
@@ -357,7 +441,17 @@ async function enumerateCollection(
       const i = cursor++;
       if (i >= todo.length) return;
       const id = todo[i]!;
-      const url = expandIdTemplate(template, id);
+      const url = uriByTokenId.get(id.toString());
+      if (!url) {
+        // tokenURI reverted OR template expansion failed for this id.
+        failed.add(id.toString());
+        consecutiveFailures++;
+        if (consecutiveFailures >= PER_COLLECTION_CONSECUTIVE_FAIL_BUDGET) {
+          cursor = todo.length;
+          return;
+        }
+        continue;
+      }
       const result = await fetchTokenAttributes(url, id);
       if (result.ok) {
         builder.addToken(id.toString(), result.attributes);
@@ -366,7 +460,6 @@ async function enumerateCollection(
         failed.add(id.toString());
         consecutiveFailures++;
         if (consecutiveFailures >= PER_COLLECTION_CONSECUTIVE_FAIL_BUDGET) {
-          // Set cursor past the end so other workers stop pulling.
           cursor = todo.length;
           return;
         }
@@ -388,36 +481,45 @@ async function enumerateCollection(
       await sleep(2_000);
       const size = builder.size();
       if (size - lastSize >= CHECKPOINT_EVERY) {
-        // Find the highest tokenId we've merged in the current run so
-        // the resume point is monotonically increasing.
         lastChunkCheckpointId = highestIdInBuilder(builder, lastChunkCheckpointId);
         await persistPartial(contract, row, builder, supplyNum, lastChunkCheckpointId);
         lastSize = size;
-        lastSavedAt = Date.now();
       }
     }
   })();
 
   await Promise.all(workers);
-  // Stop the checkpointer loop; ensure it exits cleanly.
   await checkpointer.catch(() => {});
 
   // Final persist.
   if (consecutiveFailures >= PER_COLLECTION_CONSECUTIVE_FAIL_BUDGET) {
-    // Mark failed with backoff so we retry later. Keep partial progress.
     lastChunkCheckpointId = highestIdInBuilder(builder, lastChunkCheckpointId);
-    await markFailedWithProgress(contract, row, builder, supplyNum, lastChunkCheckpointId);
-    return;
+    const retryMinutes = await markFailedWithProgress(
+      contract,
+      row,
+      builder,
+      supplyNum,
+      lastChunkCheckpointId,
+    );
+    return {
+      status: "partial",
+      tokens: builder.size(),
+      reason: `host failures (${failed.size}/${todo.length})`,
+      retryMinutes,
+    };
   }
 
   // Decide terminal state.
   if (builder.size() === 0) {
-    await markFailed(contract, row, "no tokens fetched successfully");
-    return;
+    const reason = "no tokens fetched successfully";
+    const retryMinutes = await markFailed(contract, row, reason);
+    return { status: "failed", reason, retryMinutes };
   }
   await markComplete(contract, row, builder, supplyNum);
-  void lastSavedAt; // appease unused-var if logging gets stripped
-  void client;
+  return {
+    status: builder.isMostlyIdentical() ? "all_identical" : "complete",
+    tokens: builder.size(),
+  };
 }
 
 function highestIdInBuilder(
@@ -511,13 +613,10 @@ async function markComplete(
 async function markFailed(
   contract: string,
   row: CandidateRow,
-  reason: string,
-): Promise<void> {
+  _reason: string,
+): Promise<number> {
   const attempts = (row.attemptCount ?? 0) + 1;
   const wait = backoffMs(attempts);
-  console.warn(
-    `[traits] ${contract}: failed (${reason}); attempt=${attempts}, retry in ${Math.round(wait / 60_000)}min`,
-  );
   await upsertTraits({
     contract,
     status: "failed",
@@ -530,6 +629,7 @@ async function markFailed(
     nextAttemptAt: new Date(Date.now() + wait),
     enumeratedAt: null,
   });
+  return Math.round(wait / 60_000);
 }
 
 async function markFailedWithProgress(
@@ -538,13 +638,10 @@ async function markFailedWithProgress(
   builder: ManifestBuilder,
   supply: number,
   lastEnumeratedTokenId: bigint,
-): Promise<void> {
+): Promise<number> {
   const attempts = (row.attemptCount ?? 0) + 1;
   const wait = backoffMs(attempts);
   const snapshot = builder.toJson();
-  console.warn(
-    `[traits] ${contract}: bailed mid-enumeration after ${builder.size()}/${supply} tokens; attempt=${attempts}, retry in ${Math.round(wait / 60_000)}min`,
-  );
   await upsertTraits({
     contract,
     status: "failed",
@@ -557,6 +654,7 @@ async function markFailedWithProgress(
     nextAttemptAt: new Date(Date.now() + wait),
     enumeratedAt: null,
   });
+  return Math.round(wait / 60_000);
 }
 
 interface UpsertArgs {
@@ -658,12 +756,36 @@ export async function startTraitWorker(): Promise<void> {
           enumeratedAt: null,
         });
       }
-      await enumerateCollection(client, row);
+      const outcome = await enumerateCollection(client, row);
       processed++;
       const elapsed = Date.now() - t0;
-      console.log(
-        `[traits] ${row.contract}: done in ${(elapsed / 1000).toFixed(1)}s (processed ${processed} total)`,
-      );
+      const elapsedS = (elapsed / 1000).toFixed(1);
+      switch (outcome.status) {
+        case "complete":
+          console.log(
+            `[traits] ${row.contract}: complete (${outcome.tokens} tokens, ${elapsedS}s, processed ${processed} total)`,
+          );
+          break;
+        case "all_identical":
+          console.log(
+            `[traits] ${row.contract}: all_identical (${outcome.tokens} tokens, ${elapsedS}s, processed ${processed} total)`,
+          );
+          break;
+        case "partial": {
+          const retry = outcome.retryMinutes != null ? `, retry in ${outcome.retryMinutes}min` : "";
+          console.log(
+            `[traits] ${row.contract}: partial (${outcome.tokens} tokens, ${outcome.reason}${retry}, ${elapsedS}s, processed ${processed} total)`,
+          );
+          break;
+        }
+        case "failed": {
+          const retry = outcome.retryMinutes != null ? `, retry in ${outcome.retryMinutes}min` : "";
+          console.log(
+            `[traits] ${row.contract}: failed (${outcome.reason}${retry}, ${elapsedS}s, processed ${processed} total)`,
+          );
+          break;
+        }
+      }
     } catch (err) {
       console.error(
         `[traits] ${row.contract}: unexpected error: ${err instanceof Error ? err.message : err}`,
