@@ -196,8 +196,13 @@ async function fetchTextWithRetry(
       } else if (response.status >= 400 && response.status < 500) {
         // Other 4xx (404 etc) is terminal.
         throw new Error(`Failed to fetch metadata: ${response.status}`);
+      } else if (proxiedAlready) {
+        // 5xx through the proxy: the Cloudflare worker negative-caches
+        // upstream 5xx for 60s, so retrying gets the same 502 back
+        // unchanged. Treat as terminal to stop the console-spam storm.
+        throw new Error(`Failed to fetch metadata: ${response.status}`);
       } else {
-        // 5xx - retryable, default short backoff.
+        // 5xx on a direct fetch — retryable, default short backoff.
         lastErr = new Error(`Failed to fetch metadata: ${response.status}`);
       }
     } catch (err) {

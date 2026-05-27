@@ -65,7 +65,7 @@ export function EnumeratedTraitFilter({
   }
 
   return (
-    <div className="mb-6 sticky top-16 z-[80] stamp-shadow border border-border bg-background-secondary">
+    <div className="mb-6 sticky top-16 z-[30] stamp-shadow border border-border bg-background-secondary">
       <div className="flex flex-wrap items-center gap-2 px-4 py-3">
         {isFilling ? (
           <span className="inline-flex items-center gap-2 px-3 py-1.5 text-xs font-medium bg-background-tertiary border border-border">
@@ -188,7 +188,7 @@ function TraitDropdown({
         </span>
       </button>
       {open && (
-        <div className="absolute top-full left-0 mt-1 z-[95] w-64 max-h-72 overflow-y-auto border border-border bg-background-secondary stamp-shadow">
+        <div className="absolute top-full left-0 mt-1 z-[40] w-64 max-h-72 overflow-y-auto border border-border bg-background-secondary stamp-shadow">
           <ul className="divide-y divide-border">
             {sorted.map(([value, count]) => {
               const isSelected = selected.has(value);

@@ -1,6 +1,7 @@
 /// <reference lib="webworker" />
 
 import { runFillLoop } from "@/lib/traitFillLoop";
+import { markHostDead } from "@/lib/proxyRouter";
 
 /**
  * Web Worker entrypoint for trait enumeration. Receives a start message
@@ -28,6 +29,9 @@ type StartMessage = {
     userRpc: string | undefined;
     seenTokenIds: string[];
     indexerTemplate: string | null;
+    /** Hosts the main thread has already marked dead (from localStorage).
+     *  Worker can't read localStorage, so pre-seed via this payload. */
+    deadHosts: string[];
   };
 };
 
@@ -51,6 +55,13 @@ self.addEventListener("message", (event: MessageEvent<InMessage>) => {
   if (msg.type !== "start") return;
 
   const { runId, payload } = msg;
+  // Seed worker-local SESSION_DEAD set so isHostDead() inside the fill
+  // loop catches hosts the main thread already knew about.
+  for (const host of payload.deadHosts) {
+    // markHostDead writes localStorage (no-op here) AND populates the
+    // in-memory Set, which is what we need.
+    markHostDead(`https://${host}/`);
+  }
   runFillLoop({
     contract: payload.contract,
     chainId: payload.chainId,

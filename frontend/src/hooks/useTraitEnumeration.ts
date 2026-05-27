@@ -19,6 +19,7 @@ import {
   type TokenAttribute,
 } from "@/lib/traitsCache";
 import { runFillLoop } from "@/lib/traitFillLoop";
+import { getDeadHosts } from "@/lib/proxyRouter";
 import type { WorkerOutMessage } from "@/lib/workers/traitEnumeration.worker";
 
 /**
@@ -267,6 +268,7 @@ export function useTraitEnumeration(
               userRpc,
               seenTokenIds: Array.from(seenIds),
               indexerTemplate,
+              deadHosts: getDeadHosts(),
             },
           });
         });

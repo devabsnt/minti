@@ -16,7 +16,7 @@ import {
   mergeTokenIntoAggregate,
   setTraitCache,
 } from "@/lib/traitsCache";
-import { canProxyUrl } from "@/lib/proxyRouter";
+import { isHostDead, markHostDead } from "@/lib/proxyRouter";
 
 /**
  * Pure-data fill loop for trait enumeration. Shared between the Web
@@ -100,7 +100,12 @@ export async function runFillLoop(params: FillLoopParams): Promise<void> {
 
   const hostFailures = new Map<string, number>();
   const bailedHosts = new Set<string>();
-  const entries = Array.from(uriByTokenId.entries());
+  // Hosts previously marked dead (5xx storm or persistent failure) skip
+  // the network round-trip entirely. This is what makes the second
+  // visit to a scatter-502 collection silent in the console.
+  const entries = Array.from(uriByTokenId.entries()).filter(
+    ([, uri]) => !isHostDead(uri),
+  );
   let mergedSinceLastReport = 0;
 
   for (let i = 0; i < entries.length; i += JSON_CONCURRENCY) {
@@ -125,11 +130,15 @@ export async function runFillLoop(params: FillLoopParams): Promise<void> {
           if (host) {
             const next = (hostFailures.get(host) ?? 0) + 1;
             hostFailures.set(host, next);
-            // Proxiable hosts are exempt — fetchTextWithRetry already
-            // routes them through the Cloudflare worker, so CORS isn't
-            // the failure mode and we shouldn't bail.
-            if (next >= HOST_FAILURE_BAIL && !canProxyUrl(uri)) {
+            // Bail this host (and persist as "dead" for an hour) once it
+            // crosses the threshold. We used to exempt proxiable hosts
+            // here, but the proxy can't fix an upstream that's actually
+            // returning 502 (e.g. scatter.art instareveal during a
+            // outage) — bailing avoids the console-spam storm of a
+            // 3333-token enumeration sweep against a dead endpoint.
+            if (next >= HOST_FAILURE_BAIL) {
               bailedHosts.add(host);
+              markHostDead(uri);
             }
           }
         }
