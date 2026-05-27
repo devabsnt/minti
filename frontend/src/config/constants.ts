@@ -26,21 +26,28 @@ export const PRICE_HISTORY_BLOCK_RANGE = 100_000n; // ~14 days on mainnet
 // responses without the worker rewriting CORS headers on the way back.
 export const WORKER_PROXY_URL = "https://ipfs-cache.devskibb.workers.dev";
 
-// Mirror of PROXY_ALLOWED_HOST_PATTERNS in the worker. Keep these two
-// lists in sync: hosts the worker accepts AND we know CORS-block from
-// the browser. Hosts not on this list are fetched directly (most do
-// send CORS, and proxying everything would waste worker quota).
+// Proxy-fallback allowlist. Used ONLY as a last-resort fallback when a
+// direct fetch fails with a CORS-shaped error AND the host is on this
+// list. We don't proactively proxy these hosts — most of them serve
+// CORS to browsers fine; routing through the proxy just adds an extra
+// hop and exposes us to the worker's egress IP being rate-limited /
+// blocked by the upstream (which manifests as 502 spam).
+//
+// Hosts that are KNOWN to serve CORS for collection metadata
+// (scatter.art is the canonical example — works fine for static
+// frontends per user testing) are intentionally NOT on this list.
+//
+// Only add a host here if you've confirmed direct browser fetch is
+// blocked AND the worker can successfully proxy it.
 export const PROXY_HOST_PATTERNS: readonly RegExp[] = [
-  /^([a-z0-9-]+\.)?scatter\.art$/i,
-  /^([a-z0-9-]+\.)?pancakeswap\.com$/i,
-  /^([a-z0-9-]+\.)?lootgo\.app$/i,
-  /^([a-z0-9-]+\.)?codepunks\.fun$/i,
-  /^([a-z0-9-]+\.)?madness\.finance$/i,
-  /^([a-z0-9-]+\.)?wengoods\.io$/i,
+  // S3 / R2 buckets sometimes ship without CORS headers — keep them
+  // available as proxy fallback. If a bucket does send CORS, direct
+  // fetch wins and we never touch the proxy.
   /^s3[.-][a-z0-9-]+\.amazonaws\.com$/i,
   /^[a-z0-9-]+\.s3\.[a-z0-9-]+\.amazonaws\.com$/i,
   /^[a-z0-9-]+\.r2\.dev$/i,
   /^[a-z0-9-]+\.r2\.cloudflarestorage\.com$/i,
+  // IPFS-as-a-service gateways some contracts hardcode
   /^gateway\.lighthouse\.storage$/i,
   /^ipfs\.4everland\.io$/i,
   /^[a-z0-9-]+\.mypinata\.cloud$/i,

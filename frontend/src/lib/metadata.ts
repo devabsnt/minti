@@ -5,6 +5,7 @@ import {
   markProxyPreferred,
   proxyUrlFor,
   shouldUseProxy,
+  unmarkProxyPreferred,
 } from "@/lib/proxyRouter";
 
 /**
@@ -199,7 +200,11 @@ async function fetchTextWithRetry(
       } else if (proxiedAlready) {
         // 5xx through the proxy: the Cloudflare worker negative-caches
         // upstream 5xx for 60s, so retrying gets the same 502 back
-        // unchanged. Treat as terminal to stop the console-spam storm.
+        // unchanged. Treat as terminal to stop the console-spam storm,
+        // and unmark the host from "proxy-preferred" — the proxy isn't
+        // helping, future requests should try direct again rather than
+        // loop on the broken proxy path.
+        unmarkProxyPreferred(url);
         throw new Error(`Failed to fetch metadata: ${response.status}`);
       } else {
         // 5xx on a direct fetch — retryable, default short backoff.

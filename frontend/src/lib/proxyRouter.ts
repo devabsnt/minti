@@ -3,8 +3,26 @@ import {
   WORKER_PROXY_URL,
 } from "@/config/constants";
 
-const STORAGE_KEY = "minti.proxyPreferredHosts.v1";
-const DEAD_HOSTS_KEY = "minti.deadHosts.v1";
+// One-shot cleanup of old key versions so orphaned entries don't sit
+// in localStorage forever. Runs on first module import in a browser.
+if (typeof localStorage !== "undefined") {
+  for (const stale of [
+    "minti.proxyPreferredHosts.v1",
+    "minti.deadHosts.v1",
+  ]) {
+    try {
+      localStorage.removeItem(stale);
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
+// v2: cleared after a previous build briefly auto-routed scatter.art
+// (and others on the old allowlist) through the proxy. Bumping the key
+// invalidates those stale entries so direct fetch gets to run again.
+const STORAGE_KEY = "minti.proxyPreferredHosts.v2";
+const DEAD_HOSTS_KEY = "minti.deadHosts.v2";
 const TTL_MS = 24 * 60 * 60 * 1000; // 24h
 // Dead-host TTL is shorter because upstream 502s usually recover faster
 // than CORS configs change. An hour is long enough to skip a full
@@ -94,6 +112,19 @@ export function markProxyPreferred(url: string): void {
   SESSION_PREFERRED.add(host);
   const entries = safeReadPersisted(STORAGE_KEY).filter((e) => e.host !== host);
   entries.push({ host, until: Date.now() + TTL_MS });
+  safeWritePersisted(STORAGE_KEY, entries);
+}
+
+/**
+ * Inverse of `markProxyPreferred`. Call this when a proxy request
+ * comes back 5xx — the proxy isn't helping, so future requests should
+ * try direct again instead of stuck in a proxy-502 loop.
+ */
+export function unmarkProxyPreferred(url: string): void {
+  const host = hostFromUrl(url);
+  if (!host) return;
+  SESSION_PREFERRED.delete(host);
+  const entries = safeReadPersisted(STORAGE_KEY).filter((e) => e.host !== host);
   safeWritePersisted(STORAGE_KEY, entries);
 }
 
