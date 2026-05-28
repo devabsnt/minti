@@ -110,11 +110,79 @@ async function fetchWithTimeout(url: string, ms: number): Promise<string> {
   const t = setTimeout(() => ctrl.abort(), ms);
   try {
     const resp = await fetch(url, { signal: ctrl.signal });
-    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    if (!resp.ok) {
+      const err = new Error(`HTTP ${resp.status}`) as Error & {
+        httpStatus?: number;
+        retryAfterMs?: number;
+      };
+      err.httpStatus = resp.status;
+      if (resp.status === 429) {
+        err.retryAfterMs = parseRetryAfterMs(resp.headers.get("retry-after"));
+      }
+      throw err;
+    }
     return await resp.text();
   } finally {
     clearTimeout(t);
   }
+}
+
+/** Parse a `Retry-After` header (seconds or HTTP-date) → ms, clamped. */
+function parseRetryAfterMs(header: string | null): number {
+  if (!header) return 0;
+  const secs = Number(header);
+  if (Number.isFinite(secs) && secs >= 0) return Math.min(30_000, secs * 1000);
+  const date = Date.parse(header);
+  if (!Number.isNaN(date)) return Math.max(0, Math.min(30_000, date - Date.now()));
+  return 0;
+}
+
+/**
+ * Fetch text with retry on rate-limit (429) and transient 5xx. Rate-
+ * limited gateways (Pinata's `*.mypinata.cloud`, some R2 buckets) will
+ * 429 a burst of concurrent requests; without this, every token in a
+ * collection on such a host fails and the whole collection is marked
+ * broken. Honors `Retry-After`, clamps to 30s, gives up after `attempts`.
+ *
+ * Terminal (no retry): any non-429 4xx (404 etc) — those won't get
+ * better by waiting.
+ */
+async function fetchTextWithRetry(
+  url: string,
+  timeoutMs: number,
+  attempts = 4,
+): Promise<string> {
+  let lastErr: Error | null = null;
+  for (let i = 0; i < attempts; i++) {
+    try {
+      return await fetchWithTimeout(url, timeoutMs);
+    } catch (err) {
+      const e = err as Error & { httpStatus?: number; retryAfterMs?: number };
+      lastErr = e;
+      const status = e.httpStatus;
+      // Non-429 client errors are terminal.
+      if (status != null && status >= 400 && status < 500 && status !== 429) {
+        throw e;
+      }
+      if (i < attempts - 1) {
+        // 429 → honor Retry-After (or exponential default). 5xx /
+        // network → exponential backoff with jitter.
+        const base =
+          status === 429
+            ? e.retryAfterMs && e.retryAfterMs > 0
+              ? e.retryAfterMs
+              : 1000 * (i + 1)
+            : 300 * Math.pow(2, i);
+        const jitter = Math.floor(Math.random() * 250);
+        await sleep(base + jitter);
+      }
+    }
+  }
+  throw lastErr ?? new Error("fetch failed");
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms));
 }
 
 /**
@@ -156,7 +224,10 @@ export async function fetchMetadataJson(uri: string): Promise<unknown | null> {
   }
   if (uri.startsWith("http://") || uri.startsWith("https://")) {
     try {
-      const text = await fetchWithTimeout(uri, FETCH_TIMEOUT_MS);
+      // Retry-aware: rate-limited gateways (Pinata etc.) 429 bursts;
+      // retrying with Retry-After backoff recovers the token instead
+      // of dropping it and marking the whole collection broken.
+      const text = await fetchTextWithRetry(uri, FETCH_TIMEOUT_MS);
       try { return JSON.parse(text); } catch { return null; }
     } catch {
       return null;

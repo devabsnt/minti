@@ -1,4 +1,4 @@
-import { and, asc, eq, gt, isNull, lte, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, isNull, lte, or, sql } from "drizzle-orm";
 import { createPublicClient, defineChain, fallback, http, type PublicClient } from "viem";
 import { db } from "../../db/client.js";
 import { collections, collectionTraits } from "../../db/schema.js";
@@ -184,7 +184,12 @@ async function pickNext(): Promise<CandidateRow | null> {
   }
 
   // Fresh row — collection has been enriched but no collection_traits
-  // entry yet.
+  // entry yet. Order by tier DESC so curated / explore-eligible
+  // collections (tier 2/3, what users actually see) are enumerated
+  // BEFORE the long tail of tier-1 spam. Within a tier, prefer
+  // higher-trending-score collections first; transferCount is a cheap
+  // proxy that's already on the row. Falling back to address ASC just
+  // gives the iteration order a stable tiebreaker.
   const fresh = await db
     .select({
       contract: collections.address,
@@ -202,6 +207,11 @@ async function pickNext(): Promise<CandidateRow | null> {
         // Only enumerate collections eligible for browsing
         gt(collections.tier, 0),
       )!,
+    )
+    .orderBy(
+      desc(collections.tier),
+      desc(collections.transferCount),
+      asc(collections.address),
     )
     .limit(1);
 
@@ -715,6 +725,28 @@ export async function startTraitWorker(): Promise<void> {
   console.log(
     `[traits] starting (global=${100}, per-host=${10}, fetch-concurrency-per-coll=${FETCH_CONCURRENCY_PER_COLLECTION}, checkpoint-every=${CHECKPOINT_EVERY})`,
   );
+
+  // One-shot reset of failed rows so collections lost to transient
+  // errors (rate-limit bursts before the 429-retry landed) get
+  // re-attempted. Gated by env so it only runs when explicitly asked.
+  if (env.RETRY_FAILED_TRAITS) {
+    try {
+      const reset = await db
+        .update(collectionTraits)
+        .set({
+          status: "pending",
+          attemptCount: 0,
+          nextAttemptAt: null,
+          updatedAt: sql`now()`,
+        })
+        .where(eq(collectionTraits.status, "failed"))
+        .returning({ contract: collectionTraits.contract });
+      console.log(`[traits] RETRY_FAILED_TRAITS: reset ${reset.length} failed rows to pending`);
+    } catch (err) {
+      console.error(`[traits] failed-trait reset error: ${err instanceof Error ? err.message : err}`);
+    }
+  }
+
   const client = buildClient();
 
   let stop = false;

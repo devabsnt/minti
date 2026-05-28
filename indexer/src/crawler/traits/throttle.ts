@@ -17,6 +17,18 @@
 export class HostThrottle {
   private readonly globalLimit: number;
   private readonly perHostLimit: number;
+  // Per-host overrides for gateways known to rate-limit aggressively.
+  // Matched by hostname suffix. Pinata's dedicated gateways (and some
+  // R2 buckets) 429 hard on a burst — keep their concurrency low so we
+  // don't trip the limit in the first place. The 429-retry in
+  // metadata.ts recovers stragglers, but staying under the limit avoids
+  // the backoff penalty entirely.
+  private readonly perHostOverrides: Array<{ suffix: string; limit: number }> = [
+    { suffix: "mypinata.cloud", limit: 3 },
+    { suffix: "pinata.cloud", limit: 3 },
+    { suffix: "r2.dev", limit: 4 },
+    { suffix: "r2.cloudflarestorage.com", limit: 4 },
+  ];
   private globalInFlight = 0;
   private readonly hostInFlight = new Map<string, number>();
   // Pending tasks waiting for a slot. Tasks resolve in FIFO order — the
@@ -30,6 +42,14 @@ export class HostThrottle {
   constructor(opts: { global: number; perHost: number }) {
     this.globalLimit = opts.global;
     this.perHostLimit = opts.perHost;
+  }
+
+  /** Resolve the concurrency cap for a host, honoring overrides. */
+  private limitForHost(host: string): number {
+    for (const o of this.perHostOverrides) {
+      if (host === o.suffix || host.endsWith("." + o.suffix)) return o.limit;
+    }
+    return this.perHostLimit;
   }
 
   /** Number of tasks waiting for a slot right now. Useful for logging. */
@@ -72,7 +92,7 @@ export class HostThrottle {
   private canStart(host: string): boolean {
     if (this.globalInFlight >= this.globalLimit) return false;
     const hostCount = this.hostInFlight.get(host) ?? 0;
-    return hostCount < this.perHostLimit;
+    return hostCount < this.limitForHost(host);
   }
 
   private incr(host: string): void {

@@ -48,6 +48,15 @@ const schema = z.object({
     .string()
     .default("0")
     .transform((s) => s === "1" || s.toLowerCase() === "true"),
+  // One-shot: when set, the trait worker resets every `failed` row back
+  // to `pending` on boot so collections lost to transient errors (e.g.
+  // a rate-limit burst before the 429-retry landed) get re-attempted
+  // with the current fetch logic. Set once after a fetch fix, observe
+  // the re-enumeration, then unset.
+  RETRY_FAILED_TRAITS: z
+    .string()
+    .default("0")
+    .transform((s) => s === "1" || s.toLowerCase() === "true"),
   // How many days of chain history the indexer maintains in the activity
   // table. Transfers older than this get pruned daily. Mints, burns, and
   // marketplace events (future) are kept regardless. Default 60.

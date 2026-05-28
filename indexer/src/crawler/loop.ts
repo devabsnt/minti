@@ -109,7 +109,11 @@ export async function startCrawler() {
   // but that's far better than the trait/enrich workers never starting.
   try {
     console.log("[crawler] initial stats refresh...");
-    const s = await withTimeout(refreshStats(), 120_000, "initial stats");
+    // 4 min is enough for ~70 batches of 500 contracts each at ~3s/batch.
+    // Periodic stats loop catches anything that times out anyway, so this
+    // limit just decides whether the FIRST API request after deploy sees
+    // freshly-updated stats vs the prior values.
+    const s = await withTimeout(refreshStats(), 240_000, "initial stats");
     console.log(`[crawler] initial stats: ${s.updated} collections updated in ${s.elapsedMs}ms`);
   } catch (err) {
     console.error(`[crawler] initial stats failed: ${err instanceof Error ? err.message : err} — moving on`);
