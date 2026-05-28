@@ -1,7 +1,7 @@
 import { and, asc, desc, eq, gt, isNull, lte, notInArray, or, sql } from "drizzle-orm";
 import { createPublicClient, defineChain, fallback, http, type PublicClient } from "viem";
 import { db } from "../../db/client.js";
-import { collections, collectionTraits } from "../../db/schema.js";
+import { collections, collectionTraits, tokens } from "../../db/schema.js";
 import { env } from "../../env.js";
 import {
   expandIdTemplate,
@@ -339,33 +339,41 @@ async function enumerateCollection(
   row: CandidateRow,
 ): Promise<EnumerationOutcome> {
   const contract = row.contract;
-  // Hard pre-conditions.
   const supplyNum = row.totalSupply ? Number(row.totalSupply) : 0;
-  if (!supplyNum || supplyNum <= 0 || supplyNum > 1_000_000) {
-    const reason = `invalid totalSupply: ${row.totalSupply}`;
-    const retryMinutes = await markFailed(contract, row, reason);
-    return { status: "failed", reason, retryMinutes };
-  }
+  const hasValidSupply = supplyNum > 0 && supplyNum <= 1_000_000;
+
   const builder = ManifestBuilder.fromJson(row.storedManifest);
-  // Resume point. tokenIdStart defaults to 1 unless the contract is
-  // 0-indexed; we don't have a per-collection setting for that yet, so
-  // try tokenId 0 ALSO when we're starting fresh and the first ID
-  // succeeds. Cheap optimization vs. silently skipping a token.
-  const startedFrom = row.lastEnumeratedTokenId
-    ? BigInt(row.lastEnumeratedTokenId) + 1n
-    : 1n;
-  const end = BigInt(supplyNum); // exclusive upper bound when start is 1
-  // Special-case: if we're starting fresh, also try id 0 alongside the
-  // 1..N range so 0-indexed collections aren't off by one.
-  const ids: bigint[] = [];
-  if (startedFrom === 1n) ids.push(0n);
-  for (let id = startedFrom; id <= end; id++) ids.push(id);
+
+  // Build the candidate token-ID list. Two sources:
+  //   - Known totalSupply → sequential walk 1..N (plus id 0 for
+  //     0-indexed collections). Complete by construction.
+  //   - No totalSupply() (domain NFTs, dynamic-mint, non-Enumerable
+  //     ERC-721) → walk the token IDs the indexer already captured from
+  //     transfers in its `tokens` table. Not guaranteed complete (only
+  //     covers the retention window), but it's the best we can do
+  //     without an on-chain count, and it covers everything users have
+  //     actually seen/traded.
+  let ids: bigint[];
+  if (hasValidSupply) {
+    ids = [0n];
+    for (let id = 1n; id <= BigInt(supplyNum); id++) ids.push(id);
+  } else {
+    ids = await knownTokenIds(contract);
+    if (ids.length === 0) {
+      const reason = "no totalSupply and no known token IDs";
+      const retryMinutes = await markFailed(contract, row, reason);
+      return { status: "failed", reason, retryMinutes };
+    }
+  }
+  // Bookkeeping "supply" — real totalSupply when known, else the count
+  // of token IDs we're enumerating. Used for status + persisted total.
+  const effectiveSupply = hasValidSupply ? supplyNum : ids.length;
 
   // Filter out tokens already in the manifest (survived a prior run's
   // partial persist + crash before the checkpoint).
   const todo = ids.filter((id) => !builder.has(id.toString()));
   if (todo.length === 0) {
-    await markComplete(contract, row, builder, supplyNum);
+    await markComplete(contract, row, builder, effectiveSupply);
     return {
       status: builder.isMostlyIdentical() ? "all_identical" : "complete",
       tokens: builder.size(),
@@ -441,7 +449,7 @@ async function enumerateCollection(
       const size = builder.size();
       if (size - lastSize >= CHECKPOINT_EVERY) {
         lastChunkCheckpointId = highestIdInBuilder(builder, lastChunkCheckpointId);
-        await persistPartial(contract, row, builder, supplyNum, lastChunkCheckpointId);
+        await persistPartial(contract, row, builder, effectiveSupply, lastChunkCheckpointId);
         lastSize = size;
       }
     }
@@ -457,7 +465,7 @@ async function enumerateCollection(
       contract,
       row,
       builder,
-      supplyNum,
+      effectiveSupply,
       lastChunkCheckpointId,
     );
     return {
@@ -474,11 +482,34 @@ async function enumerateCollection(
     const retryMinutes = await markFailed(contract, row, reason);
     return { status: "failed", reason, retryMinutes };
   }
-  await markComplete(contract, row, builder, supplyNum);
+  await markComplete(contract, row, builder, effectiveSupply);
   return {
     status: builder.isMostlyIdentical() ? "all_identical" : "complete",
     tokens: builder.size(),
   };
+}
+
+/**
+ * Token IDs the indexer has already captured for a contract (from
+ * transfer ingestion). Used for collections without a `totalSupply()`
+ * — we can't synthesize a 1..N range, but we DO know which tokens have
+ * moved. Capped to avoid loading an unbounded set into memory.
+ */
+async function knownTokenIds(contract: string): Promise<bigint[]> {
+  const rows = await db
+    .select({ tokenId: tokens.tokenId })
+    .from(tokens)
+    .where(eq(tokens.contract, contract))
+    .limit(50_000);
+  const out: bigint[] = [];
+  for (const r of rows) {
+    try {
+      out.push(BigInt(r.tokenId));
+    } catch {
+      // non-numeric tokenId — skip
+    }
+  }
+  return out;
 }
 
 function highestIdInBuilder(
