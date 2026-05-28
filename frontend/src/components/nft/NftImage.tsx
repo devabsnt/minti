@@ -4,6 +4,13 @@ import { useState, useCallback, useEffect, useRef } from "react";
 import { IPFS_GATEWAYS } from "@/config/constants";
 import { resolveUri, toCanonicalIpfsUri } from "@/lib/metadata";
 
+// How many times to retry the whole gateway ladder before showing the
+// placeholder, and the base backoff between retries (doubles each time:
+// 1s, 2s, 4s). Tuned so a grid that fails to paint on first mount
+// (connection contention) recovers automatically within a few seconds.
+const MAX_ATTEMPTS = 3;
+const RETRY_BASE_MS = 1_000;
+
 interface NftImageProps {
   src: string;
   rawUri?: string; // original ipfs:// or ar:// URI for gateway fallback
@@ -150,11 +157,15 @@ export function NftImage({
   const [gatewayIdx, setGatewayIdx] = useState(0);
   const [allFailed, setAllFailed] = useState(false);
   const [loaded, setLoaded] = useState(false);
-  // Wall-clock at first mount — drives the global ceiling watchdog so
-  // a token whose gateways all hang doesn't keep extending its deadline
-  // each time the per-gateway watchdog advances the ladder. Set inside
-  // the watchdog effect itself the first time it runs (lazy seed).
-  const mountedAtRef = useRef<number>(0);
+  // Retry counter. A "retry" restarts the whole gateway ladder from
+  // scratch and forces a fresh <img> element (via the `key` below), so
+  // a load that failed/stalled on the first paint — common when a whole
+  // grid mounts at once and the browser queues requests past the
+  // per-host connection cap — gets another shot instead of a permanent
+  // placeholder. This is the automatic equivalent of the user hitting
+  // refresh.
+  const [attempt, setAttempt] = useState(0);
+  const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // If rawUri isn't already ipfs://, try to extract a CID from src so we
   // can still step across gateways when the JSON hardcoded a gateway URL.
@@ -162,17 +173,43 @@ export function NftImage({
     rawUri && rawUri.startsWith("ipfs://") ? rawUri : toCanonicalIpfsUri(src);
 
   const handleError = useCallback(() => {
-    if (ipfsUri) {
-      const nextIdx = gatewayIdx + 1;
-      if (nextIdx < IPFS_GATEWAYS.length) {
-        setGatewayIdx(nextIdx);
-        setLoaded(false);
-        return;
-      }
+    // 1. Step across the IPFS gateway ladder first.
+    if (ipfsUri && gatewayIdx + 1 < IPFS_GATEWAYS.length) {
+      setGatewayIdx(gatewayIdx + 1);
+      setLoaded(false);
+      return;
     }
+    // 2. Ladder exhausted (or non-IPFS URL). Retry the whole load a few
+    //    times with backoff before giving up — first-load failures are
+    //    usually transient (connection contention on a full grid, cold
+    //    CDN edge, a momentarily-flaky gateway), which is exactly why a
+    //    manual refresh tends to fix them.
+    if (attempt < MAX_ATTEMPTS) {
+      const delay = RETRY_BASE_MS * Math.pow(2, attempt); // 1s, 2s, 4s
+      if (retryTimerRef.current) clearTimeout(retryTimerRef.current);
+      retryTimerRef.current = setTimeout(() => {
+        setGatewayIdx(0);
+        setLoaded(false);
+        setAttempt((a) => a + 1);
+      }, delay);
+      return;
+    }
+    // 3. Out of retries — show the placeholder.
     setAllFailed(true);
     onAllFailed?.();
-  }, [ipfsUri, gatewayIdx, onAllFailed]);
+  }, [ipfsUri, gatewayIdx, attempt, onAllFailed]);
+
+  // Clear any pending retry once the media loads or the component
+  // unmounts, so a late retry can't stomp a successful load.
+  useEffect(() => {
+    if (loaded && retryTimerRef.current) {
+      clearTimeout(retryTimerRef.current);
+      retryTimerRef.current = null;
+    }
+    return () => {
+      if (retryTimerRef.current) clearTimeout(retryTimerRef.current);
+    };
+  }, [loaded]);
 
   // Cold path: use the URL as given (after ipfs:// → public gateway
   // rewriting). On error step gatewayIdx forward and resolve to the
@@ -184,39 +221,22 @@ export function NftImage({
     currentSrc = rewriteIpfsUrl(src);
   }
 
-  // Per-gateway watchdog (6s) and a global 15s ceiling. Without the
-  // ceiling, a token whose every gateway TCP-hangs would burn a fresh
-  // watchdog window for each — 3 gateways × 12s = 36s of spinner
-  // before a placeholder. With the ceiling, the worst case is 15s.
-  // Hard placeholder after that beats a stalled UI.
+  // Per-attempt watchdog. <img> reliably fires onError for real errors
+  // (404/DNS/CORS), but a request that's merely QUEUED behind the
+  // browser's per-host connection limit — or a gateway that TCP-accepts
+  // then hangs — never fires either event. The watchdog treats a
+  // too-slow load as an error so `handleError` can advance the ladder
+  // or schedule a retry. Kept lenient (12s) so it doesn't false-trip on
+  // genuinely-slow-but-progressing loads; the retry path is what
+  // ultimately recovers a stalled first paint.
   useEffect(() => {
     if (loaded || allFailed) return;
-    if (mountedAtRef.current === 0) mountedAtRef.current = Date.now();
-    const PER_GATEWAY_MS = 6_000;
-    const GLOBAL_CEILING_MS = 15_000;
-    const elapsed = Date.now() - mountedAtRef.current;
-    const remainingCeiling = Math.max(0, GLOBAL_CEILING_MS - elapsed);
-    const perGateway = setTimeout(() => {
+    const WATCHDOG_MS = 12_000;
+    const timer = setTimeout(() => {
       if (!loaded) handleError();
-    }, PER_GATEWAY_MS);
-    // remainingCeiling can be 0 when a parent rerender remounts the
-    // effect after the global window has already elapsed. Schedule a
-    // microtask in that case so we don't synchronously setState during
-    // the effect body.
-    const global = setTimeout(
-      () => {
-        if (!loaded) {
-          setAllFailed(true);
-          onAllFailed?.();
-        }
-      },
-      remainingCeiling > 0 ? remainingCeiling : 0,
-    );
-    return () => {
-      clearTimeout(perGateway);
-      clearTimeout(global);
-    };
-  }, [loaded, allFailed, currentSrc, handleError, onAllFailed]);
+    }, WATCHDOG_MS);
+    return () => clearTimeout(timer);
+  }, [loaded, allFailed, currentSrc, attempt, handleError]);
 
   if (!src || allFailed) {
     return (
@@ -239,6 +259,7 @@ export function NftImage({
       )}
       {kind === "video" && (
         <video
+          key={`v${attempt}`}
           src={currentSrc}
           muted
           loop
@@ -271,6 +292,7 @@ export function NftImage({
         // ships its own JS. Explicitly NOT allowing top-navigation or
         // forms — minimize attack surface for a media tile.
         <iframe
+          key={`f${attempt}`}
           src={currentSrc}
           title={alt}
           sandbox="allow-scripts"
@@ -284,6 +306,7 @@ export function NftImage({
       {kind === "image" && (
         // eslint-disable-next-line @next/next/no-img-element
         <img
+          key={`i${attempt}`}
           src={currentSrc}
           alt={alt}
           loading={priority ? "eager" : "lazy"}
