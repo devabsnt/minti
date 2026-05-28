@@ -165,7 +165,11 @@ async function pickNext(): Promise<CandidateRow | null> {
         eq(collections.metadataBroken, false),
       )!,
     )
-    .orderBy(asc(collectionTraits.updatedAt))
+    // Tier DESC so curated/explore-eligible collections (tier 2/3 — the
+    // ones users actually browse) jump the queue ahead of the tier-1
+    // long tail, even among reset/failed rows that all share an
+    // updatedAt timestamp. updatedAt ASC is the stable tiebreaker.
+    .orderBy(desc(collections.tier), asc(collectionTraits.updatedAt))
     .limit(1);
 
   if (partials.length > 0) {
