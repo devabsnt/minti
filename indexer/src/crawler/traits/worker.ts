@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gt, isNull, lte, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, isNull, lte, notInArray, or, sql } from "drizzle-orm";
 import { createPublicClient, defineChain, fallback, http, type PublicClient } from "viem";
 import { db } from "../../db/client.js";
 import { collections, collectionTraits } from "../../db/schema.js";
@@ -131,8 +131,17 @@ interface CandidateRow {
  *
  * Returns null when there's nothing to do; caller sleeps and retries.
  */
-async function pickNext(): Promise<CandidateRow | null> {
+async function pickNext(exclude: string[]): Promise<CandidateRow | null> {
   const now = new Date();
+  // Exclude contracts currently being worked by other slots in this
+  // process (in-memory in-flight set). Without this, two concurrent
+  // slots could select the same `partial` row between its checkpoint
+  // writes and both enumerate it.
+  const notInFlight =
+    exclude.length > 0 ? notInArray(collectionTraits.contract, exclude) : undefined;
+  const notInFlightFresh =
+    exclude.length > 0 ? notInArray(collections.address, exclude) : undefined;
+
   // Resumable / retry-eligible rows first.
   const partials = await db
     .select({
@@ -163,6 +172,7 @@ async function pickNext(): Promise<CandidateRow | null> {
           lte(collectionTraits.nextAttemptAt, now),
         )!,
         eq(collections.metadataBroken, false),
+        ...(notInFlight ? [notInFlight] : []),
       )!,
     )
     // Tier DESC so curated/explore-eligible collections (tier 2/3 — the
@@ -210,6 +220,7 @@ async function pickNext(): Promise<CandidateRow | null> {
         eq(collections.metadataBroken, false),
         // Only enumerate collections eligible for browsing
         gt(collections.tier, 0),
+        ...(notInFlightFresh ? [notInFlightFresh] : []),
       )!,
     )
     .orderBy(
@@ -659,10 +670,41 @@ function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
 
+// How many collections to enumerate CONCURRENTLY. Each collection's
+// fetches still go through the shared global HostThrottle (100) with
+// per-host caps, so concurrency here just lets us actually USE that
+// budget instead of one collection at a time leaving it mostly idle.
+// Env-overridable but ships with a sane default so a plain deploy
+// "just works".
+const COLLECTION_CONCURRENCY = (() => {
+  const raw = process.env.TRAIT_COLLECTION_CONCURRENCY;
+  const n = raw ? parseInt(raw, 10) : NaN;
+  return Number.isFinite(n) && n >= 1 && n <= 32 ? n : 6;
+})();
+
 export async function startTraitWorker(): Promise<void> {
   console.log(
-    `[traits] starting (global=${100}, per-host=${10}, fetch-concurrency-per-coll=${FETCH_CONCURRENCY_PER_COLLECTION}, checkpoint-every=${CHECKPOINT_EVERY})`,
+    `[traits] starting (collection-concurrency=${COLLECTION_CONCURRENCY}, global-fetch=100, per-host=10, fetch-per-coll=${FETCH_CONCURRENCY_PER_COLLECTION}, checkpoint-every=${CHECKPOINT_EVERY})`,
   );
+
+  // Reclaim stale in-flight rows from a previous crashed run. A row left
+  // in `partial` had a worker on it that died; at boot nothing is
+  // in-flight, so flipping it back to `pending` makes it re-claimable
+  // (it still carries its manifest + lastEnumeratedTokenId, so it
+  // resumes from the checkpoint rather than restarting). Always-on,
+  // idempotent.
+  try {
+    const reclaimed = await db
+      .update(collectionTraits)
+      .set({ status: "pending", updatedAt: sql`now()` })
+      .where(eq(collectionTraits.status, "partial"))
+      .returning({ contract: collectionTraits.contract });
+    if (reclaimed.length > 0) {
+      console.log(`[traits] reclaimed ${reclaimed.length} stale partial rows → pending`);
+    }
+  } catch (err) {
+    console.error(`[traits] stale-partial reclaim error: ${err instanceof Error ? err.message : err}`);
+  }
 
   // One-shot reset of failed rows so collections lost to transient
   // errors (rate-limit bursts before the 429-retry landed) get
@@ -694,78 +736,113 @@ export async function startTraitWorker(): Promise<void> {
   process.once("SIGTERM", shutdown);
   process.once("SIGINT", shutdown);
 
+  // In-flight set + serialized claim. `claimNext` is the ONLY place that
+  // selects + reserves a collection, and it's chained on `claimLock` so
+  // two slots can never resolve `pickNext` to the same row before either
+  // adds it to `inFlight`. The enumerations themselves run concurrently;
+  // only the (fast, single-query) claim is serialized.
+  const inFlight = new Set<string>();
+  let claimLock: Promise<unknown> = Promise.resolve();
   let processed = 0;
-  while (!stop) {
-    let row: CandidateRow | null;
-    try {
-      row = await pickNext();
-    } catch (err) {
-      console.error(`[traits] pickNext failed: ${err instanceof Error ? err.message : err}`);
-      await sleep(10_000);
-      continue;
-    }
-    if (!row) {
-      await sleep(IDLE_SLEEP_MS);
-      continue;
-    }
-    const t0 = Date.now();
-    try {
-      // Ensure a row exists in collection_traits so the worker can be
-      // observed mid-run (status='pending' is set immediately).
-      if (row.status === null) {
-        await upsertTraits({
-          contract: row.contract,
-          status: "pending",
-          totalSupply: row.totalSupply,
-          tokenCount: 0,
-          manifest: null,
-          sampledTokenURIs: null,
-          lastEnumeratedTokenId: null,
-          attemptCount: 0,
-          nextAttemptAt: null,
-          enumeratedAt: null,
-        });
-      }
-      const outcome = await enumerateCollection(client, row);
-      processed++;
-      const elapsed = Date.now() - t0;
-      const elapsedS = (elapsed / 1000).toFixed(1);
-      switch (outcome.status) {
-        case "complete":
-          console.log(
-            `[traits] ${row.contract}: complete (${outcome.tokens} tokens, ${elapsedS}s, processed ${processed} total)`,
-          );
-          break;
-        case "all_identical":
-          console.log(
-            `[traits] ${row.contract}: all_identical (${outcome.tokens} tokens, ${elapsedS}s, processed ${processed} total)`,
-          );
-          break;
-        case "partial": {
-          const retry = outcome.retryMinutes != null ? `, retry in ${outcome.retryMinutes}min` : "";
-          console.log(
-            `[traits] ${row.contract}: partial (${outcome.tokens} tokens, ${outcome.reason}${retry}, ${elapsedS}s, processed ${processed} total)`,
-          );
-          break;
-        }
-        case "failed": {
-          const retry = outcome.retryMinutes != null ? `, retry in ${outcome.retryMinutes}min` : "";
-          console.log(
-            `[traits] ${row.contract}: failed (${outcome.reason}${retry}, ${elapsedS}s, processed ${processed} total)`,
-          );
-          break;
+
+  async function claimNext(): Promise<CandidateRow | null> {
+    const result = claimLock.then(async () => {
+      const row = await pickNext([...inFlight]);
+      if (row) {
+        inFlight.add(row.contract);
+        // Stamp a row immediately for fresh collections so the next
+        // claim's `pickNext` sees it as `pending` (in-flight set also
+        // guards it, but this keeps the DB consistent for observers).
+        if (row.status === null) {
+          await upsertTraits({
+            contract: row.contract,
+            status: "pending",
+            totalSupply: row.totalSupply,
+            tokenCount: 0,
+            manifest: null,
+            sampledTokenURIs: null,
+            lastEnumeratedTokenId: null,
+            attemptCount: 0,
+            nextAttemptAt: null,
+            enumeratedAt: null,
+          });
         }
       }
-    } catch (err) {
-      console.error(
-        `[traits] ${row.contract}: unexpected error: ${err instanceof Error ? err.message : err}`,
-      );
+      return row;
+    });
+    // Keep the lock chain alive regardless of success/failure.
+    claimLock = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    return result;
+  }
+
+  async function slot(slotId: number): Promise<void> {
+    while (!stop) {
+      let row: CandidateRow | null;
       try {
-        await markFailed(row.contract, row, `unexpected: ${err instanceof Error ? err.message : err}`);
-      } catch {
-        // swallow — next loop iteration will try again
+        row = await claimNext();
+      } catch (err) {
+        console.error(`[traits] claim failed (slot ${slotId}): ${err instanceof Error ? err.message : err}`);
+        await sleep(10_000);
+        continue;
+      }
+      if (!row) {
+        // Nothing to do right now. Sleep, but stagger slots so they
+        // don't all re-query in lockstep.
+        await sleep(IDLE_SLEEP_MS + slotId * 1000);
+        continue;
+      }
+      const t0 = Date.now();
+      try {
+        const outcome = await enumerateCollection(client, row);
+        processed++;
+        const elapsedS = ((Date.now() - t0) / 1000).toFixed(1);
+        logOutcome(row.contract, outcome, elapsedS, processed);
+      } catch (err) {
+        console.error(
+          `[traits] ${row.contract}: unexpected error: ${err instanceof Error ? err.message : err}`,
+        );
+        try {
+          await markFailed(row.contract, row, `unexpected: ${err instanceof Error ? err.message : err}`);
+        } catch {
+          // swallow — backoff will re-queue it
+        }
+      } finally {
+        inFlight.delete(row.contract);
       }
     }
   }
+
+  await Promise.all(
+    Array.from({ length: COLLECTION_CONCURRENCY }, (_, i) => slot(i)),
+  );
   console.log("[traits] stopped");
+}
+
+function logOutcome(
+  contract: string,
+  outcome: EnumerationOutcome,
+  elapsedS: string,
+  processed: number,
+): void {
+  switch (outcome.status) {
+    case "complete":
+      console.log(`[traits] ${contract}: complete (${outcome.tokens} tokens, ${elapsedS}s, processed ${processed} total)`);
+      break;
+    case "all_identical":
+      console.log(`[traits] ${contract}: all_identical (${outcome.tokens} tokens, ${elapsedS}s, processed ${processed} total)`);
+      break;
+    case "partial": {
+      const retry = outcome.retryMinutes != null ? `, retry in ${outcome.retryMinutes}min` : "";
+      console.log(`[traits] ${contract}: partial (${outcome.tokens} tokens, ${outcome.reason}${retry}, ${elapsedS}s, processed ${processed} total)`);
+      break;
+    }
+    case "failed": {
+      const retry = outcome.retryMinutes != null ? `, retry in ${outcome.retryMinutes}min` : "";
+      console.log(`[traits] ${contract}: failed (${outcome.reason}${retry}, ${elapsedS}s, processed ${processed} total)`);
+      break;
+    }
+  }
 }
