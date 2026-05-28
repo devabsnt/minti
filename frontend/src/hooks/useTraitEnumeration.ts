@@ -1,59 +1,31 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
-import type { Abi } from "viem";
-import { useBrowseChain } from "@/providers/ChainProvider";
-import { useRpc } from "@/providers/RpcProvider";
-import {
-  createRpcPool,
-  executeBatchedMulticalls,
-  encodeCall,
-  decodeResult,
-  type MulticallRequest,
-} from "@/lib/rpcPool";
-import {
-  useIndexerCollection,
-  useIndexerCollectionTraits,
-} from "@/hooks/useIndexerCollections";
+import { useMemo } from "react";
+import { useIndexerCollectionTraits } from "@/hooks/useIndexerCollections";
 import type { ApiTraitsManifest } from "@/lib/indexerApi";
-import {
-  aggregateTokenIds,
-  getAggregateForCollection,
-  type CachedTraitData,
-  type TokenAttribute,
-} from "@/lib/traitsCache";
-import { runFillLoop } from "@/lib/traitFillLoop";
+import type { TokenAttribute } from "@/lib/traitsCache";
 
 /**
- * Client-side trait enumeration that gap-fills the metadata cache.
+ * Trait state for a collection's filter UI, sourced ENTIRELY from the
+ * indexer's pre-built manifest (`/api/collections/:address/traits`).
  *
- * Flow:
- *   1. Seed state from `getAggregateForCollection` — topbar filter is
- *      usable immediately, even with partial data.
- *   2. Verify cached samples haven't shifted (reveal detection runs on
- *      the main thread because it needs the shared RPC pool state).
- *   3. Run `runFillLoop` — multicall encoding (when no indexer
- *      template is available), JSON fetching, attribute aggregation,
- *      and IndexedDB writes. Progress is reported after each wave.
+ * The indexer's trait worker walks every token's `tokenURI`, resolves
+ * the metadata (honoring each contract's own host), and stores a
+ * compact dictionary-encoded manifest. The frontend just inflates it.
+ * There is no client-side enumeration anymore — that path was slow and
+ * unreliable (rate-limited gateways, CORS, serial fetching) and is what
+ * the indexer system replaced.
  *
- * The audit's §6 suggested a Web Worker for this loop. That refactor
- * proved flaky under Vercel's bundling — workers spawned but silently
- * failed in production, leaving the topbar stuck at 0%. JSON parsing
- * for ~30 parallel fetches is tiny relative to the network time, so
- * main-thread is acceptable. If we revisit worker offloading, do it
- * with a working e2e test first.
- *
- * Pass `enabled: false` to skip enumeration (EVMFS manifest path).
+ * States returned:
+ *   - `checking`      manifest request in flight (brief, network-fast)
+ *   - `complete`      full manifest — filter is live
+ *   - `partial`       worker mid-walk; show the traits gathered so far
+ *   - `all_identical` collection has no per-token trait variation
+ *   - `idle`          no manifest yet (404 / pending / failed) — the
+ *                     filter UI hides itself. No stuck spinner: if the
+ *                     indexer hasn't finished this collection, we simply
+ *                     don't show a filter until it has.
  */
-const TOKEN_URI_ABI = [
-  {
-    inputs: [{ type: "uint256", name: "tokenId" }],
-    name: "tokenURI",
-    outputs: [{ type: "string" }],
-    stateMutability: "view",
-    type: "function",
-  },
-] as const satisfies Abi;
 
 export type EnumerationStatus =
   | "idle"
@@ -66,7 +38,7 @@ export type EnumerationStatus =
 
 export interface EnumerationState {
   status: EnumerationStatus;
-  /** 0..1; meaningful when status is `enumerating` or `partial`. */
+  /** 0..1; meaningful when status is `partial`. */
   progress: number;
   enumeratedCount: number;
   totalSupply: number;
@@ -87,227 +59,60 @@ const INITIAL_STATE: EnumerationState = {
   rarityRanks: {},
 };
 
-// Number of cached samples to re-fetch on revisit for reveal detection.
-const SAMPLE_SIZE = 3;
-
+/**
+ * `totalSupply` and `tokenIdStart` are retained in the signature for
+ * call-site compatibility but are no longer used — the manifest carries
+ * its own totalSupply. `enabled` gates the manifest fetch (e.g. pass
+ * false when an EVMFS on-chain manifest is the source instead).
+ */
 export function useTraitEnumeration(
   contract: string | undefined,
-  totalSupply: number | undefined,
-  tokenIdStart: number = 1,
+  _totalSupply?: number | undefined,
+  _tokenIdStart: number = 1,
   enabled: boolean = true,
 ): EnumerationState {
-  const { browseChainId } = useBrowseChain();
-  const { getEffectiveRpc } = useRpc();
-  const indexerCollection = useIndexerCollection(contract);
-  const indexerTraits = useIndexerCollectionTraits(contract);
-  const [state, setState] = useState<EnumerationState>(INITIAL_STATE);
-  const cancelRef = useRef(false);
-  const runIdRef = useRef(0);
+  const indexerTraits = useIndexerCollectionTraits(enabled ? contract : undefined);
 
-  // Short-circuit on the indexer manifest. When the indexer has a
-  // `complete` / `all_identical` manifest, we use it verbatim and skip
-  // ALL client-side fetching. A `partial` manifest is still useful as
-  // a head start, but we let client-side enumeration fill the gap.
-  const indexerState = useMemo(() => {
+  return useMemo(() => {
+    if (!enabled) return INITIAL_STATE;
+    if (indexerTraits.isLoading) {
+      return { ...INITIAL_STATE, status: "checking" };
+    }
     const d = indexerTraits.data;
-    if (!d || !d.manifest) return null;
-    if (d.status !== "complete" && d.status !== "all_identical") return null;
-    return decodeIndexerManifest(d.manifest, d.status, d.totalSupply);
-  }, [indexerTraits.data]);
-
-  useEffect(() => {
-    if (!enabled) return;
-    if (!contract || !totalSupply || totalSupply <= 0) return;
-    // If the indexer manifest is terminal, publish it and skip the
-    // client-side enumeration entirely.
-    if (indexerState) {
-      setState(indexerState);
-      return;
+    if (!d || !d.manifest) {
+      // 404 (not yet built), or pending/failed with no manifest. Hide
+      // the filter rather than spin — it'll appear once the worker
+      // finishes this collection.
+      return INITIAL_STATE;
     }
-    const myRunId = ++runIdRef.current;
-    cancelRef.current = false;
-    const contractLower = contract.toLowerCase();
-    const userRpc = getEffectiveRpc(browseChainId);
-    const indexerTemplate =
-      indexerCollection.data?.collection?.tokenUriTemplate ?? null;
-
-    async function run() {
-      setState((s) => ({ ...s, status: "checking" }));
-
-      // 1. Seed from existing aggregate
-      let aggregate = await getAggregateForCollection(
-        browseChainId,
-        contractLower,
-      );
-      if (myRunId !== runIdRef.current) return;
-
-      if (aggregate) {
-        const stillValid = await verifyAggregateBySampling(
-          contractLower,
-          aggregate,
-          browseChainId,
-          userRpc,
-        );
-        if (myRunId !== runIdRef.current) return;
-        if (!stillValid) aggregate = undefined;
-      }
-
-      const initialCount = aggregate
-        ? Object.keys(aggregate.tokenAttributes).length
-        : 0;
-      const isAlreadyComplete =
-        aggregate &&
-        aggregate.totalSupply === totalSupply &&
-        (aggregate.status === "complete" ||
-          aggregate.status === "all_identical") &&
-        initialCount >= totalSupply!;
-
-      if (isAlreadyComplete && aggregate) {
-        setState({
-          status:
-            aggregate.status === "all_identical" ? "all_identical" : "complete",
-          progress: 1,
-          enumeratedCount: initialCount,
-          totalSupply: aggregate.totalSupply,
-          traitCounts: aggregate.traitCounts,
-          tokenAttributes: aggregate.tokenAttributes,
-          rarityScores: aggregate.rarityScores,
-          rarityRanks: aggregate.rarityRanks,
-        });
-        return;
-      }
-
-      const partialState = (
-        progress: number,
-        count: number,
-        agg: CachedTraitData | undefined,
-      ): EnumerationState => ({
-        status: "partial",
-        progress,
-        enumeratedCount: count,
-        totalSupply: totalSupply!,
-        traitCounts: agg?.traitCounts ?? {},
-        tokenAttributes: agg?.tokenAttributes ?? {},
-        rarityScores: agg?.rarityScores ?? {},
-        rarityRanks: agg?.rarityRanks ?? {},
-      });
-
-      setState(
-        partialState(
-          totalSupply! > 0 ? initialCount / totalSupply! : 0,
-          initialCount,
-          aggregate,
-        ),
-      );
-
-      const seenIds = aggregateTokenIds(aggregate);
-      setState((s) => ({ ...s, status: "enumerating" }));
-
-      // Helper: re-read aggregate and publish to React state.
-      const publishProgress = async () => {
-        const fresh = await getAggregateForCollection(
-          browseChainId,
-          contractLower,
-        );
-        if (myRunId !== runIdRef.current) return;
-        const enumeratedCount = Object.keys(
-          fresh?.tokenAttributes ?? {},
-        ).length;
-        const progress =
-          totalSupply! > 0 ? Math.min(1, enumeratedCount / totalSupply!) : 0;
-        setState(partialState(progress, enumeratedCount, fresh));
+    if (d.status === "all_identical") {
+      // No per-token variation — return empty trait maps so the filter
+      // UI hides itself (it keys off traitCounts being empty). The
+      // `all_identical` status is informational.
+      return {
+        ...INITIAL_STATE,
+        status: "all_identical",
+        progress: 1,
+        enumeratedCount: d.tokenCount ?? 0,
+        totalSupply: d.totalSupply ? Number(d.totalSupply) : 0,
       };
-
-      // 2. Run the fill loop inline. JSON parsing for ~30 parallel
-      //    fetches doesn't move the needle on main-thread perf; the
-      //    network round-trip is the bottleneck.
-      await runFillLoop({
-        contract: contractLower,
-        chainId: browseChainId,
-        totalSupply: totalSupply!,
-        tokenIdStart,
-        userRpc,
-        seenTokenIds: seenIds,
-        indexerTemplate,
-        onProgress: () => {
-          void publishProgress();
-        },
-        cancelled: () => cancelRef.current || myRunId !== runIdRef.current,
-      });
-
-      // 3. Publish terminal state.
-      const finalAgg = await getAggregateForCollection(
-        browseChainId,
-        contractLower,
-      );
-      if (myRunId !== runIdRef.current || !finalAgg) return;
-      const finalCount = Object.keys(finalAgg.tokenAttributes).length;
-      const finalProgress =
-        totalSupply! > 0 ? Math.min(1, finalCount / totalSupply!) : 0;
-      setState({
-        status:
-          finalAgg.status === "all_identical"
-            ? "all_identical"
-            : finalAgg.status === "complete"
-              ? "complete"
-              : finalAgg.status === "failed"
-                ? "failed"
-                : "partial",
-        progress: finalProgress,
-        enumeratedCount: finalCount,
-        totalSupply: finalAgg.totalSupply,
-        traitCounts: finalAgg.traitCounts,
-        tokenAttributes: finalAgg.tokenAttributes,
-        rarityScores: finalAgg.rarityScores,
-        rarityRanks: finalAgg.rarityRanks,
-      });
     }
-
-    run().catch((err) => {
-      if (process.env.NODE_ENV !== "production") {
-        console.error("[useTraitEnumeration] failed:", err);
-      }
-      if (myRunId === runIdRef.current) {
-        setState((s) => ({
-          ...s,
-          status: s.enumeratedCount > 0 ? "partial" : "failed",
-        }));
-      }
-    });
-
-    return () => {
-      cancelRef.current = true;
-    };
-    // getEffectiveRpc identity changes only when the RPC pool changes,
-    // not per render. browseChainId / contract / totalSupply drive work.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [
-    contract,
-    totalSupply,
-    tokenIdStart,
-    browseChainId,
-    enabled,
-    indexerCollection.data?.collection?.tokenUriTemplate,
-    indexerState,
-  ]);
-
-  return state;
+    if (d.status === "complete" || d.status === "partial") {
+      return decodeIndexerManifest(d.manifest, d.status, d.totalSupply);
+    }
+    return INITIAL_STATE;
+  }, [enabled, indexerTraits.isLoading, indexerTraits.data]);
 }
 
 /**
- * Inflate the indexer's dictionary-encoded manifest into the same
- * `EnumerationState` shape `useTraitEnumeration` produces from
- * client-side enumeration. Walks each token, dereferences value
- * indices through `traitValues`, builds `traitCounts` and rarity
- * scores on the way.
- *
- * Terminal-only (`complete` / `all_identical`) — caller is responsible
- * for not passing in partial manifests it can't reconcile with the
- * client-side aggregate.
+ * Inflate the indexer's dictionary-encoded manifest into the
+ * `EnumerationState` the filter UI consumes. Dereferences value
+ * indices through `traitValues`, builds `traitCounts`, and computes
+ * rarity scores/ranks.
  */
 function decodeIndexerManifest(
   manifest: ApiTraitsManifest,
-  status: "complete" | "all_identical",
+  status: "complete" | "partial",
   totalSupplyStr: string | null,
 ): EnumerationState {
   const traitTypes = manifest.traitTypes ?? [];
@@ -329,14 +134,11 @@ function decodeIndexerManifest(
       const value = traitValues[i]?.[vIdx];
       if (!traitType || value == null) continue;
       attrs.push({ trait_type: traitType, value });
-      traitCounts[traitType][value] =
-        (traitCounts[traitType][value] ?? 0) + 1;
+      traitCounts[traitType][value] = (traitCounts[traitType][value] ?? 0) + 1;
     }
     tokenAttributes[entry.id] = attrs;
   }
 
-  // Rarity: same formula as client-side computeRarity — score is sum of
-  // supply / count for each (trait, value) pair on the token.
   const enumeratedCount = Object.keys(tokenAttributes).length || 1;
   const rarityScores: Record<string, number> = {};
   for (const [id, attrs] of Object.entries(tokenAttributes)) {
@@ -353,59 +155,17 @@ function decodeIndexerManifest(
     rarityRanks[id] = idx + 1;
   });
 
+  const count = Object.keys(tokenAttributes).length;
   return {
     status,
-    progress: 1,
-    enumeratedCount: Object.keys(tokenAttributes).length,
+    progress: status === "partial" && totalSupply > 0
+      ? Math.min(1, count / totalSupply)
+      : 1,
+    enumeratedCount: count,
     totalSupply,
     traitCounts,
     tokenAttributes,
     rarityScores,
     rarityRanks,
   };
-}
-
-// ── Helpers ─────────────────────────────────────────────────────
-
-/**
- * Re-fetch a few of the cached `tokenURI` samples and compare against
- * what the chain returns now. Any mismatch indicates a reveal / baseURI
- * swap and the aggregate is stale.
- */
-async function verifyAggregateBySampling(
-  contract: string,
-  aggregate: CachedTraitData,
-  chainId: number,
-  userRpc: string | undefined,
-): Promise<boolean> {
-  if (aggregate.sampledTokenURIs.length === 0) return true;
-  const samples = shuffle(aggregate.sampledTokenURIs).slice(0, SAMPLE_SIZE);
-  const pool = createRpcPool(chainId, userRpc);
-  const calls: MulticallRequest[] = samples.map((s) =>
-    encodeCall(contract as `0x${string}`, TOKEN_URI_ABI, "tokenURI", [
-      BigInt(s.tokenId),
-    ]),
-  );
-  try {
-    const results = await executeBatchedMulticalls(pool, calls);
-    const flat = results.flat();
-    for (let i = 0; i < samples.length; i++) {
-      const entry = flat[i];
-      if (!entry || !entry.success) continue;
-      const uri = decodeResult<string>(TOKEN_URI_ABI, "tokenURI", entry);
-      if (uri && uri !== samples[i].uri) return false;
-    }
-    return true;
-  } catch {
-    return true;
-  }
-}
-
-function shuffle<T>(arr: T[]): T[] {
-  const out = arr.slice();
-  for (let i = out.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [out[i], out[j]] = [out[j], out[i]];
-  }
-  return out;
 }

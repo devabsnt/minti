@@ -288,41 +288,68 @@ async function multicallTokenURIs(
 ): Promise<Map<string, string | null>> {
   const fnName = is1155 ? ("uri" as const) : ("tokenURI" as const);
   const out = new Map<string, string | null>();
-  // 50 calls per multicall batch — matches Monad's per-eth_call gas
-  // budget per the existing rpcPool config. Larger batches occasionally
-  // hit the cap.
+  // 50 calls per multicall batch by default. For collections with big
+  // on-chain `data:` URIs (a 5KB SVG × 50 = 250KB response), the whole
+  // tryAggregate `eth_call` blows the RPC's response/gas limit and
+  // throws. `multicallBatch` adaptively halves a failing batch down to
+  // single calls, so arbitrarily-large data URIs still resolve — a
+  // single tokenURI always fits.
   const BATCH = 50;
   for (let i = 0; i < tokenIds.length; i += BATCH) {
     const batch = tokenIds.slice(i, i + BATCH);
-    const contracts = batch.map((id) => ({
-      address: contract as `0x${string}`,
-      abi: ABI,
-      functionName: fnName,
-      args: [id] as const,
-    }));
-    try {
-      const results = await client.multicall({
-        contracts,
-        multicallAddress: MULTICALL3_ADDRESS,
-        allowFailure: true,
-      });
-      for (let j = 0; j < batch.length; j++) {
-        const r = results[j];
-        const idStr = batch[j]!.toString();
-        if (r?.status === "success" && typeof r.result === "string" && r.result.length > 0) {
-          out.set(idStr, r.result);
-        } else {
-          out.set(idStr, null);
-        }
-      }
-    } catch {
-      // Entire batch failed — record nulls and move on. The per-token
-      // failure budget in the outer enumeration will bail us cleanly
-      // if everything in this batch comes back null.
-      for (const id of batch) out.set(id.toString(), null);
-    }
+    await multicallBatch(client, contract, fnName, batch, out);
   }
   return out;
+}
+
+/**
+ * Resolve `tokenURI`/`uri` for one batch of IDs. On failure, recurse by
+ * halving — a 50-call batch that throws (response too large for big
+ * data: URIs, or a flaky RPC) is split into two 25s, etc., down to
+ * single calls. Single-call failures are recorded as null. Successful
+ * sub-batches write straight into `out`.
+ */
+async function multicallBatch(
+  client: PublicClient,
+  contract: string,
+  fnName: "tokenURI" | "uri",
+  batch: bigint[],
+  out: Map<string, string | null>,
+): Promise<void> {
+  if (batch.length === 0) return;
+  const contracts = batch.map((id) => ({
+    address: contract as `0x${string}`,
+    abi: ABI,
+    functionName: fnName,
+    args: [id] as const,
+  }));
+  try {
+    const results = await client.multicall({
+      contracts,
+      multicallAddress: MULTICALL3_ADDRESS,
+      allowFailure: true,
+    });
+    for (let j = 0; j < batch.length; j++) {
+      const r = results[j];
+      const idStr = batch[j]!.toString();
+      if (r?.status === "success" && typeof r.result === "string" && r.result.length > 0) {
+        out.set(idStr, r.result);
+      } else {
+        out.set(idStr, null);
+      }
+    }
+  } catch {
+    // The whole eth_call failed — most likely the aggregate response
+    // exceeded the RPC's size/gas limit (big data: URIs). Halve and
+    // retry; a single call always fits, so this terminates.
+    if (batch.length === 1) {
+      out.set(batch[0]!.toString(), null);
+      return;
+    }
+    const mid = Math.ceil(batch.length / 2);
+    await multicallBatch(client, contract, fnName, batch.slice(0, mid), out);
+    await multicallBatch(client, contract, fnName, batch.slice(mid), out);
+  }
 }
 
 /** Per-collection terminal outcome — used by the worker loop to log

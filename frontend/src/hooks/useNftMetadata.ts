@@ -5,7 +5,6 @@ import { useRpc } from "@/providers/RpcProvider";
 import { useBrowseChain } from "@/providers/ChainProvider";
 import { resolveMetadata } from "@/lib/metadata";
 import { getFromCache, setInCache, metadataCacheKey } from "@/lib/cache";
-import { mergeTokenIntoAggregate } from "@/lib/traitsCache";
 import {
   createRpcPool,
   executeBatchedMulticalls,
@@ -51,15 +50,7 @@ export function useNftMetadata(
     queryFn: async (): Promise<NftMetadata> => {
       const cacheKey = metadataCacheKey(browseChainId, nftContract!, tokenId!.toString());
       const cached = await getFromCache<NftMetadata>(cacheKey);
-      if (cached) {
-        void mergeTokenIntoAggregate(
-          browseChainId,
-          nftContract!,
-          tokenId!.toString(),
-          cached.attributes,
-        );
-        return cached;
-      }
+      if (cached) return cached;
 
       // Use rpcPool to share node-health state with the batch path —
       // a 429 on one path now backs off the other path too.
@@ -80,14 +71,6 @@ export function useNftMetadata(
 
       const metadata = await resolveMetadata(uri, tokenId!);
       await setInCache(cacheKey, metadata);
-      // Feed the trait aggregate so the topbar filter benefits from
-      // every detail-page visit without a separate sweep.
-      void mergeTokenIntoAggregate(
-        browseChainId,
-        nftContract!,
-        tokenId!.toString(),
-        metadata.attributes,
-      );
       return metadata;
     },
     enabled: !!nftContract && tokenId != null,
@@ -146,12 +129,6 @@ export function useBatchNftMetadata(tokens: BatchToken[]) {
         const { token: t, cacheKey: key, cached } = cacheChecks[i];
         if (cached) {
           results.set(`${t.contractAddress}:${t.tokenId}`, cached);
-          void mergeTokenIntoAggregate(
-            browseChainId,
-            t.contractAddress,
-            t.tokenId.toString(),
-            cached.attributes,
-          );
           // Seed single-token cache so individual hook calls don't re-fetch
           queryClient.setQueryData(
             ["nft-metadata", browseChainId, t.contractAddress, t.tokenId.toString()],
@@ -190,12 +167,6 @@ export function useBatchNftMetadata(tokens: BatchToken[]) {
         try {
           const metadata = await resolveMetadata(uri, token.tokenId);
           await setInCache(cacheKey, metadata);
-          void mergeTokenIntoAggregate(
-            browseChainId,
-            token.contractAddress,
-            token.tokenId.toString(),
-            metadata.attributes,
-          );
 
           const mapKey = `${token.contractAddress}:${token.tokenId}`;
           results.set(mapKey, metadata);

@@ -256,11 +256,15 @@ function CollectionPage({
   const indexerTotalSupplyForTraits = indexerCollection?.totalSupply
     ? Number(indexerCollection.totalSupply)
     : 0;
+  // Trait filter is driven by the indexer's pre-built manifest. Enable
+  // for every non-EVMFS collection (EVMFS collections use their on-chain
+  // manifest via `evmfsState` instead). The totalSupply arg is vestigial
+  // now — the manifest carries its own — but kept for signature compat.
   const enumeratedState = useTraitEnumeration(
     collectionAddress,
     indexerTotalSupplyForTraits || undefined,
     1,
-    !indexManifest && indexerTotalSupplyForTraits > 0,
+    !indexManifest,
   );
   const evmfsState = useMemo<EnumerationState | null>(
     () => (indexManifest ? manifestToEnumerationState(indexManifest) : null),
