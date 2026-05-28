@@ -5,8 +5,8 @@ import { startPollLoop } from "./poll.js";
 import { pruneOldActivity, startPruneLoop } from "./pruning.js";
 import { retemplateMissingImageTemplates } from "./retemplate.js";
 import { RpcSource } from "./rpc-source.js";
-import { refreshStats, startStatsLoop } from "./stats.js";
-import { refreshTiers, startTierLoop } from "./tier.js";
+import { startStatsLoop } from "./stats.js";
+import { startTierLoop } from "./tier.js";
 import { startTraitWorker } from "./traits/worker.js";
 
 /**
@@ -82,52 +82,27 @@ export async function startCrawler() {
     console.log("[crawler] bootstrap skipped (RUN_BOOTSTRAP=0)");
   }
 
-  // 2. One-shot stats refresh + tier classification, sequential, BEFORE
-  //    the periodic loops start. Guarantees the API serves fresh tier
-  //    distribution to the first request after deploy. Without this the
-  //    initial periodic stats/tier race could leave tiers stale until
-  //    the second tier interval fired (~10 min later).
-  // Retemplate first — fixes up `image_url_template` for collections
-  // where the old (lastIndexOf-only) algorithm missed the match (e.g.
-  // scatter URLs with `tokenId=X&v=<timestamp>`). Pure CPU pass over
-  // stored sample_image_url values. Idempotent: re-runs do nothing
-  // once everything is filled in.
-  try {
-    const r = await retemplateMissingImageTemplates();
-    if (r.filled > 0) {
-      console.log(`[retemplate] filled ${r.filled}/${r.scanned} missing image templates in ${r.elapsedMs}ms`);
-    }
-  } catch (err) {
-    console.error(`[retemplate] failed: ${err instanceof Error ? err.message : err}`);
-  }
+  // 2. Retemplate — fast idempotent CPU pass over stored image
+  //    templates. Fired in the BACKGROUND so it can't delay the workers.
+  //    (Stats + tier are intentionally NOT run here: the periodic tier
+  //    loop runs immediately at t=0 and the periodic stats loop at t=45s,
+  //    so they already cover the initial pass without an extra blocking
+  //    call. History lesson: awaiting stats/tier here repeatedly parked
+  //    the entire crawler — including the trait + enrich workers, which
+  //    don't read stats/tiers at all — behind a slow query for minutes.)
+  void retemplateMissingImageTemplates()
+    .then((r) => {
+      if (r.filled > 0) {
+        console.log(`[retemplate] filled ${r.filled}/${r.scanned} missing image templates in ${r.elapsedMs}ms`);
+      }
+    })
+    .catch((err) => {
+      console.error(`[retemplate] failed: ${err instanceof Error ? err.message : err}`);
+    });
 
-  // Initial stats + tier passes — bounded by a hard timeout so a stuck
-  // query (Postgres lock, network hang) doesn't park the entire crawler
-  // before periodic tasks start. If we time out here, the periodic
-  // stats / tier loops below will run it on their normal cadence; the
-  // first request after deploy might serve slightly-stale tier data,
-  // but that's far better than the trait/enrich workers never starting.
-  try {
-    console.log("[crawler] initial stats refresh...");
-    // 4 min is enough for ~70 batches of 500 contracts each at ~3s/batch.
-    // Periodic stats loop catches anything that times out anyway, so this
-    // limit just decides whether the FIRST API request after deploy sees
-    // freshly-updated stats vs the prior values.
-    const s = await withTimeout(refreshStats(), 240_000, "initial stats");
-    console.log(`[crawler] initial stats: ${s.updated} collections updated in ${s.elapsedMs}ms`);
-  } catch (err) {
-    console.error(`[crawler] initial stats failed: ${err instanceof Error ? err.message : err} — moving on`);
-  }
-  try {
-    console.log("[crawler] initial tier classification...");
-    const t = await withTimeout(refreshTiers(), 60_000, "initial tier");
-    console.log(`[crawler] initial tier: T0=${t.tier0} T1=${t.tier1} T2=${t.tier2} (${t.updated} changed) in ${t.elapsedMs}ms`);
-  } catch (err) {
-    console.error(`[crawler] initial tier failed: ${err instanceof Error ? err.message : err}`);
-  }
-
-  // 3-7 run concurrently. Each catches its own errors internally and
-  // loops forever; top-level failures here would be unrecoverable bugs.
+  // 3-7 run concurrently, starting IMMEDIATELY. Each catches its own
+  // errors internally and loops forever; top-level failures here would
+  // be unrecoverable bugs.
   const tasks: Array<{ name: string; promise: Promise<void> }> = [
     { name: "poll", promise: startPollLoop(source) },
     { name: "stats", promise: startStatsLoop() },
@@ -145,35 +120,4 @@ export async function startCrawler() {
       console.error(`[${task.name}] top-level failure:`, err);
     });
   }
-}
-
-/**
- * Race `promise` against a timeout. Throws `Timed out` if the promise
- * doesn't settle in `ms` milliseconds. Caller decides whether to recover
- * (e.g. log and skip) or rethrow.
- *
- * Used to bound the blocking initial passes (stats, tier) so a stuck
- * Postgres query can't keep the periodic crawler tasks from ever
- * starting. The periodic loops will recover the missed work on their
- * normal cadence.
- *
- * NOTE: this is best-effort cancellation — the underlying Postgres
- * query keeps running on the server until it finishes or the
- * connection drops. The timeout just lets us stop awaiting it.
- */
-function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
-  return new Promise<T>((resolve, reject) => {
-    const timer = setTimeout(() => {
-      reject(new Error(`${label} timed out after ${ms}ms`));
-    }, ms);
-    promise
-      .then((v) => {
-        clearTimeout(timer);
-        resolve(v);
-      })
-      .catch((err) => {
-        clearTimeout(timer);
-        reject(err);
-      });
-  });
 }
