@@ -231,52 +231,6 @@ async function pickNext(): Promise<CandidateRow | null> {
 }
 
 /**
- * Resolve a token's metadata URI. For collections whose
- * `tokenUriTemplate` has `{id}` (or is templatizable from "1"), we
- * expand client-side. Otherwise we fall through to a per-token
- * multicall — but that path is rare in practice and the worker handles
- * it one collection at a time, so a few extra multicalls aren't going
- * to break the RPC pool.
- */
-function expandTemplateOrNull(template: string, tokenId: bigint): string | null {
-  if (template.includes("{id}")) return expandIdTemplate(template, tokenId);
-  // Try to derive a template from a "1"-based reference URI.
-  const built = buildTemplateFromReference(template, 1n);
-  if (!built) return null;
-  return expandIdTemplate(built, tokenId);
-}
-
-/**
- * Same boundary-safe substitution as the frontend `buildUriTemplate`.
- * Walks the URI from right to left for an occurrence of the reference
- * tokenId where both surrounding characters are non-alphanumeric (so
- * we don't rewrite a "1" inside a CID or timestamp).
- */
-function buildTemplateFromReference(uri: string, refId: bigint): string | null {
-  if (!uri) return null;
-  const refDec = refId.toString();
-  const refHex = refId.toString(16);
-  const refHexPad = refHex.padStart(64, "0");
-  const candidates = [refHexPad, refDec, ...(refHex !== refDec ? [refHex] : [])];
-  const isBoundary = (ch: string | undefined) =>
-    ch == null || !/[A-Za-z0-9]/.test(ch);
-  for (const refStr of candidates) {
-    let searchFrom = uri.length;
-    while (true) {
-      const idx = uri.lastIndexOf(refStr, searchFrom - 1);
-      if (idx === -1) break;
-      const before = uri[idx - 1];
-      const after = uri[idx + refStr.length];
-      if (isBoundary(before) && isBoundary(after)) {
-        return uri.slice(0, idx) + "{id}" + uri.slice(idx + refStr.length);
-      }
-      searchFrom = idx;
-    }
-  }
-  return null;
-}
-
-/**
  * Fetch metadata for a single tokenId and return its attributes. Null
  * on failure (404, host down, JSON parse error). The throttle gates
  * the actual network call so caller can launch as many in-flight
@@ -377,27 +331,6 @@ async function enumerateCollection(
     const retryMinutes = await markFailed(contract, row, reason);
     return { status: "failed", reason, retryMinutes };
   }
-  if (!row.tokenUriTemplate) {
-    const reason = "no tokenUriTemplate";
-    const retryMinutes = await markFailed(contract, row, reason);
-    return { status: "failed", reason, retryMinutes };
-  }
-
-  // Two URI-resolution modes:
-  //   (A) Template path — derive a `{id}`-substitutable string from the
-  //       stored sample URI and expand client-side. Free, no chain reads.
-  //   (B) Multicall path — call tokenURI(id) for every token. Necessary
-  //       for on-chain data: URIs (each token has unique embedded JSON),
-  //       per-token content-addressed CIDs, and off-chain APIs that
-  //       don't follow a numeric `/N.json` shape.
-  //
-  // We don't try to detect (B) heuristically; if (A) doesn't yield a
-  // template, we just fall through to (B). The multicall path is slower
-  // (~1 round-trip per 50 tokens) but covers the long tail.
-  const template = row.tokenUriTemplate.includes("{id}")
-    ? row.tokenUriTemplate
-    : buildTemplateFromReference(row.tokenUriTemplate, 1n);
-
   const builder = ManifestBuilder.fromJson(row.storedManifest);
   // Resume point. tokenIdStart defaults to 1 unless the contract is
   // 0-indexed; we don't have a per-collection setting for that yet, so
@@ -424,19 +357,20 @@ async function enumerateCollection(
     };
   }
 
-  // Resolve URIs for every todo token up front. For the template path
-  // this is just string substitution. For the multicall path we batch
-  // chain reads in chunks of 50 — slower but works for any contract.
-  let uriByTokenId: Map<string, string | null>;
-  if (template) {
-    uriByTokenId = new Map();
-    for (const id of todo) {
-      uriByTokenId.set(id.toString(), expandIdTemplate(template, id));
-    }
-  } else {
-    console.log(`[traits] ${contract}: no URI template — multicalling tokenURI for ${todo.length} tokens`);
-    uriByTokenId = await multicallTokenURIs(client, contract, row.is1155, todo);
-  }
+  // ALWAYS multicall tokenURI(id) for every token. No template guessing
+  // — the chain is the source of truth for each token's URI, and
+  // Multicall3 across the RPC pool resolves all of them in batches of
+  // 50 cheaply (RPCs are fast and free; this is not the bottleneck).
+  // Whatever URI the contract returns, we fetch AS-GIVEN (the metadata
+  // resolver honors the contract's host instead of rewriting to slow
+  // public gateways). data: URIs resolve inline with zero network.
+  console.log(`[traits] ${contract}: walking tokenURI for ${todo.length} tokens`);
+  const uriByTokenId = await multicallTokenURIs(
+    client,
+    contract,
+    row.is1155,
+    todo,
+  );
 
   let consecutiveFailures = 0;
   let lastChunkCheckpointId: bigint | null = row.lastEnumeratedTokenId

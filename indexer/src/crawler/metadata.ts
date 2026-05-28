@@ -196,44 +196,70 @@ function sleep(ms: number): Promise<void> {
  */
 export async function fetchMetadataJson(uri: string): Promise<unknown | null> {
   if (!uri) return null;
+
+  // 1. Inline data: URI — decode, no network.
   if (uri.startsWith("data:")) {
     const decoded = decodeDataUriJson(uri);
     if (!decoded) return null;
     try { return JSON.parse(decoded); } catch { return null; }
   }
-  const ipfs = parseIpfsLike(uri);
-  if (ipfs) {
-    const ctrls = IPFS_GATEWAYS.map(() => new AbortController());
-    const attempts = IPFS_GATEWAYS.map(async (gw, i) => {
-      const t = setTimeout(() => ctrls[i]!.abort(), FETCH_TIMEOUT_MS);
-      try {
-        const resp = await fetch(`${gw}${ipfs.cid}${ipfs.path}`, { signal: ctrls[i]!.signal });
-        if (!resp.ok) throw new Error(`${resp.status}`);
-        return await resp.text();
-      } finally {
-        clearTimeout(t);
-      }
-    });
-    try {
-      const text = await Promise.any(attempts);
-      ctrls.forEach((c) => c.abort());
-      try { return JSON.parse(text); } catch { return null; }
-    } catch {
-      return null;
-    }
+
+  // 2. Bare ipfs:// (no host specified by the contract) — race the
+  //    public gateways since we have nothing else to go on.
+  if (uri.startsWith("ipfs://") || uri.startsWith("ar://")) {
+    const text = await raceIpfsGateways(uri);
+    if (text == null) return null;
+    try { return JSON.parse(text); } catch { return null; }
   }
+
+  // 3. http(s) URL — the contract chose a specific host. HONOR IT
+  //    FIRST. Dedicated gateways (Pinata, etc.) are fast for their own
+  //    content; rewriting to public gateways (the old behavior) threw
+  //    that away and routed through ipfs.io, which is slow for
+  //    directory-path CIDs and was timing out → false failures.
   if (uri.startsWith("http://") || uri.startsWith("https://")) {
     try {
-      // Retry-aware: rate-limited gateways (Pinata etc.) 429 bursts;
-      // retrying with Retry-After backoff recovers the token instead
-      // of dropping it and marking the whole collection broken.
       const text = await fetchTextWithRetry(uri, FETCH_TIMEOUT_MS);
-      try { return JSON.parse(text); } catch { return null; }
+      try { return JSON.parse(text); } catch { /* fall through to gateways */ }
     } catch {
-      return null;
+      // The contract's host failed. If the URL is IPFS-shaped we can
+      // still recover by extracting the CID and racing public gateways.
     }
+    const text = await raceIpfsGateways(uri);
+    if (text == null) return null;
+    try { return JSON.parse(text); } catch { return null; }
   }
+
   return null;
+}
+
+/**
+ * Resolve an IPFS-shaped URI (ipfs://, or an https gateway URL we can
+ * pull a CID out of) by racing the public gateway pool. Returns the
+ * first 200 body, or null when none respond. Used as a fallback when
+ * the contract's own host is down/unrecognized.
+ */
+async function raceIpfsGateways(uri: string): Promise<string | null> {
+  const ipfs = parseIpfsLike(uri);
+  if (!ipfs) return null;
+  const ctrls = IPFS_GATEWAYS.map(() => new AbortController());
+  const attempts = IPFS_GATEWAYS.map(async (gw, i) => {
+    const t = setTimeout(() => ctrls[i]!.abort(), FETCH_TIMEOUT_MS);
+    try {
+      const resp = await fetch(`${gw}${ipfs.cid}${ipfs.path}`, { signal: ctrls[i]!.signal });
+      if (!resp.ok) throw new Error(`${resp.status}`);
+      return await resp.text();
+    } finally {
+      clearTimeout(t);
+    }
+  });
+  try {
+    const text = await Promise.any(attempts);
+    ctrls.forEach((c) => c.abort());
+    return text;
+  } catch {
+    return null;
+  }
 }
 
 export function expandIdTemplate(uri: string, tokenId: bigint): string {
